@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "concord-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:\\Users\\Administrador\\Desktop\\concord\\app", "run", "web"],
+      "port": 5173
+    },
+    {
+      "name": "concord-web-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:\\Users\\Administrador\\Desktop\\concord\\app", "run", "web", "--", "--mode", "production"],
+      "port": 5173
+    }
+  ]
+}
