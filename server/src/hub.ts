@@ -20,6 +20,8 @@ interface Att {
    * com uma conexão separada da voz (que roda dentro do WebView).
    */
   ss?: string | null;
+  /** Controle remoto: quem esta pessoa autorizou a mexer na tela que ela transmite. */
+  ct?: string | null;
 }
 
 interface UserRow {
@@ -64,6 +66,8 @@ const SOUND_COLS = 'SELECT id, scope, group_id, owner_id, name, emoji, created_a
 
 export class Hub extends DurableObject<Env> {
   private sql: SqlStorage;
+  /** Última vez que o som de entrada de cada pessoa tocou, para não repetir a cada reconexão. */
+  private lastEntry = new Map<string, number>();
   /** Último som tocado por usuário, para segurar quem aperta sem parar. */
   private lastSound = new Map<string, number>();
 
@@ -201,7 +205,8 @@ export class Hub extends DurableObject<Env> {
 
   private async uploadSound(req: Request, url: URL) {
     const uid = await this.httpUser(req);
-    const scope = url.searchParams.get('scope') === 'group' ? 'group' : 'user';
+    const wanted = url.searchParams.get('scope');
+    const scope = wanted === 'group' || wanted === 'entry' ? wanted : 'user';
     const name = str(url.searchParams.get('name'), 'Nome do som', 1, 32);
     const emoji = (url.searchParams.get('emoji') ?? '').trim().slice(0, 16) || '🔊';
     const mime = (req.headers.get('Content-Type') ?? '').split(';')[0].trim().toLowerCase();
@@ -209,6 +214,20 @@ export class Hub extends DurableObject<Env> {
     const data = await req.arrayBuffer();
     if (data.byteLength === 0) throw new Fail('Arquivo vazio');
     if (data.byteLength > MAX_SOUND_BYTES) throw new Fail('Som grande demais (máximo 512 KB)');
+
+    if (scope === 'entry') {
+      // Som de entrada: o admin escolhe para outra pessoa; fica guardado em nome dela.
+      this.requireAdmin(uid);
+      const target = this.user(String(url.searchParams.get('userId') ?? ''));
+      if (!target) throw new Fail('Usuário não encontrado');
+      this.sql.exec("DELETE FROM sounds WHERE scope = 'entry' AND owner_id = ?", target.id);
+      this.sql.exec(
+        'INSERT INTO sounds (id, scope, group_id, owner_id, name, emoji, mime, data, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+        crypto.randomUUID(), 'entry', null, target.id, name, emoji, mime, data, Date.now(),
+      );
+      this.pushUser(target.id, uid);
+      return this.user(target.id);
+    }
 
     let gid: string | null = null;
     if (scope === 'group') {
@@ -243,7 +262,7 @@ export class Hub extends DurableObject<Env> {
   /** O som existe e este usuário pode mexer nele (dono do som ou dono do grupo)? */
   private manageableSound(uid: string, soundId: unknown): Row {
     const s = this.one(SOUND_COLS + ' WHERE id = ?', String(soundId ?? ''));
-    if (!s) throw new Fail('Som não encontrado');
+    if (!s || s.scope === 'entry') throw new Fail('Som não encontrado');
     if (s.owner_id === uid) return s;
     const g = s.group_id ? this.one('SELECT owner_id FROM groups WHERE id = ?', String(s.group_id)) : null;
     if (g?.owner_id !== uid) throw new Fail('Só quem enviou o som ou o dono do grupo pode fazer isso');
@@ -316,7 +335,7 @@ export class Hub extends DurableObject<Env> {
         if (!att) throw new Fail('Não autenticado');
         result = await this.handle(String(op), ws, att, d);
       }
-      ws.send(JSON.stringify({ id, ok: true, d: result ?? null }));
+      if (id !== undefined) ws.send(JSON.stringify({ id, ok: true, d: result ?? null }));
     } catch (e) {
       if (!(e instanceof Fail)) console.error(op, e);
       ws.send(JSON.stringify({ id, ok: false, error: e instanceof Fail ? e.message : 'Erro interno' }));
@@ -392,7 +411,7 @@ export class Hub extends DurableObject<Env> {
       case 'sound.play': {
         if (!att.vc) throw new Fail('Entre em uma sala de voz para tocar sons');
         const s = this.one(SOUND_COLS + ' WHERE id = ?', String(d.soundId ?? ''));
-        if (!s) throw new Fail('Som não encontrado');
+        if (!s || s.scope === 'entry') throw new Fail('Som não encontrado');
         const ch = this.channel(att.vc);
         // Som de grupo só toca nas salas daquele grupo; som pessoal só o dono toca.
         if (s.scope === 'group' ? s.group_id !== ch.group_id : s.owner_id !== uid) throw new Fail('Você não pode usar esse som aqui');
@@ -525,7 +544,7 @@ export class Hub extends DurableObject<Env> {
         const ch = this.channel(d.channelId);
         const gid = this.ownedGroup(uid, ch.group_id);
         for (const s of this.sockets()) {
-          if (s.att.vc === ch.id) this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null });
+          if (s.att.vc === ch.id) this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null, ct: null });
         }
         this.sql.exec('DELETE FROM messages WHERE channel_id = ?', ch.id);
         this.sql.exec('DELETE FROM channels WHERE id = ?', ch.id);
@@ -570,7 +589,31 @@ export class Hub extends DurableObject<Env> {
         const list = Array.isArray(d.badges) ? d.badges : [];
         const badges = [...new Set(list.filter((b): b is string => typeof b === 'string' && BADGE_RE.test(b)))].slice(0, MAX_BADGES);
         this.sql.exec('UPDATE users SET badges = ? WHERE id = ?', JSON.stringify(badges), target.id);
-        this.sendTo([...this.audienceOf(target.id), target.id, uid], 'user.update', this.user(target.id));
+        this.pushUser(target.id, uid);
+        return null;
+      }
+      case 'admin.entry.set': {
+        this.requireAdmin(uid);
+        const target = this.user(String(d.userId ?? ''));
+        if (!target) throw new Fail('Usuário não encontrado');
+        const src = this.one('SELECT id FROM sounds WHERE id = ?', String(d.soundId ?? ''));
+        if (!src) throw new Fail('Som não encontrado');
+        // Guarda uma cópia: o som de entrada continua valendo mesmo que o original seja apagado.
+        const id = crypto.randomUUID();
+        this.sql.exec(
+          `INSERT INTO sounds (id, scope, group_id, owner_id, name, emoji, mime, data, created_at)
+           SELECT ?, 'entry', NULL, ?, name, emoji, mime, data, ? FROM sounds WHERE id = ?`,
+          id, target.id, Date.now(), String(src.id),
+        );
+        this.sql.exec("DELETE FROM sounds WHERE scope = 'entry' AND owner_id = ? AND id != ?", target.id, id);
+        this.pushUser(target.id, uid);
+        return null;
+      }
+      case 'admin.entry.clear': {
+        this.requireAdmin(uid);
+        const target = String(d.userId ?? '');
+        this.sql.exec("DELETE FROM sounds WHERE scope = 'entry' AND owner_id = ?", target);
+        this.pushUser(target, uid);
         return null;
       }
       case 'admin.voice.kick': {
@@ -579,7 +622,7 @@ export class Hub extends DurableObject<Env> {
         for (const s of this.sockets()) {
           if (s.att.uid !== target || !s.att.vc) continue;
           const vc = s.att.vc;
-          this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null });
+          this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null, ct: null });
           this.broadcastVoice(vc);
           this.sendTo([target], 'voice.kicked', { channelId: vc });
         }
@@ -614,14 +657,24 @@ export class Hub extends DurableObject<Env> {
         if (ch.type !== 'voice') throw new Fail('Essa sala não é de voz');
         this.memberGroup(uid, ch.group_id);
         const prev = att.vc;
-        this.setAtt(ws, { ...att, vc: String(ch.id), sid: null, tr: [], ss: null });
+        this.setAtt(ws, { ...att, vc: String(ch.id), sid: null, tr: [], ss: null, ct: null });
         if (prev && prev !== ch.id) this.broadcastVoice(prev);
         this.broadcastVoice(String(ch.id));
-        return { sfu: Boolean(this.env.SFU_APP_ID && this.env.SFU_APP_SECRET) };
+        // Som de entrada (escolhido pelo admin): toca para todos da sala, inclusive para quem chegou.
+        let entrySound: string | null = null;
+        const es = prev === ch.id ? null : this.one("SELECT id FROM sounds WHERE scope = 'entry' AND owner_id = ?", uid);
+        const now = Date.now();
+        if (es && now - (this.lastEntry.get(uid) ?? 0) > 8000) {
+          this.lastEntry.set(uid, now);
+          entrySound = String(es.id);
+          const others = this.sockets(ws).filter((x) => x.att.vc === ch.id).map((x) => x.att.uid);
+          this.sendTo(others, 'sound.played', { soundId: entrySound, userId: uid, channelId: String(ch.id) });
+        }
+        return { sfu: Boolean(this.env.SFU_APP_ID && this.env.SFU_APP_SECRET), entrySound };
       }
       case 'voice.leave': {
         if (!att.vc) return null;
-        this.setAtt(ws, { ...att, vc: null, sid: null, tr: [], ss: null });
+        this.setAtt(ws, { ...att, vc: null, sid: null, tr: [], ss: null, ct: null });
         this.broadcastVoice(att.vc);
         return null;
       }
@@ -630,17 +683,64 @@ export class Hub extends DurableObject<Env> {
         const tr = Array.isArray(d.tracks)
           ? d.tracks.filter((t): t is string => typeof t === 'string' && t.length <= 32).slice(0, 6)
           : att.tr;
+        const stillSharing = tr.some((t) => t.startsWith('screen'));
         this.setAtt(ws, {
           ...att,
           m: typeof d.muted === 'boolean' ? d.muted : att.m,
           d: typeof d.deafened === 'boolean' ? d.deafened : att.d,
           tr,
+          ct: stillSharing ? att.ct ?? null : null,
         });
+        if (att.ct && !stillSharing) this.sendTo([att.ct], 'rc.ended', { hostId: uid });
         this.broadcastVoice(att.vc);
         return null;
       }
       case 'voice.sfu':
         return this.sfu(ws, att, d);
+
+      // ---- controle remoto: quem transmite a tela autoriza UMA pessoa da mesma sala a mexer nela
+      case 'rc.grant': {
+        if (!att.vc) throw new Fail('Entre em uma sala de voz primeiro');
+        if (!att.tr.some((t) => t.startsWith('screen'))) throw new Fail('Comece a transmitir a tela antes de dar o controle');
+        const target = String(d.userId ?? '');
+        if (target === uid) throw new Fail('Escolha outra pessoa');
+        if (!this.sockets().some((x) => x.att.uid === target && x.att.vc === att.vc)) throw new Fail('Essa pessoa não está na sua sala');
+        if (att.ct && att.ct !== target) this.sendTo([att.ct], 'rc.ended', { hostId: uid });
+        this.setAtt(ws, { ...att, ct: target });
+        this.broadcastVoice(att.vc);
+        return null;
+      }
+      case 'rc.revoke': {
+        if (!att.ct) return null;
+        this.setAtt(ws, { ...att, ct: null });
+        this.sendTo([att.ct], 'rc.ended', { hostId: uid });
+        if (att.vc) this.broadcastVoice(att.vc);
+        return null;
+      }
+      case 'rc.signal': {
+        // Combinação da ligação direta entre os dois aparelhos (ofertas e endereços).
+        const to = String(d.to ?? '');
+        const data = d.data;
+        if (!att.vc || JSON.stringify(data ?? null).length > 20_000) throw new Fail('Sinal inválido');
+        const peers = this.sockets().filter((x) => x.att.uid === to && x.att.vc === att.vc);
+        const asHost = att.ct === to;
+        const targets = asHost ? peers : peers.filter((x) => x.att.ct === uid);
+        if (targets.length === 0) throw new Fail('Sem permissão de controle');
+        const payload = JSON.stringify({ ev: 'rc.signal', d: { from: uid, data } });
+        for (const t of targets) t.ws.send(payload);
+        return null;
+      }
+      case 'rc.input': {
+        // Reserva para quando a ligação direta não abre: os comandos passam pelo servidor.
+        const to = String(d.to ?? '');
+        const e = Array.isArray(d.e) ? d.e.slice(0, 64) : [];
+        if (!att.vc || e.length === 0) return null;
+        const payload = JSON.stringify({ ev: 'rc.input', d: { from: uid, e } });
+        for (const x of this.sockets()) {
+          if (x.att.uid === to && x.att.vc === att.vc && x.att.ct === uid) x.ws.send(payload);
+        }
+        return null;
+      }
 
       default:
         throw new Fail('Operação desconhecida');
@@ -752,10 +852,18 @@ export class Hub extends DurableObject<Env> {
     } catch {
       /* valor antigo ou inválido: fica sem selos */
     }
+    const es = this.one("SELECT id, name, emoji FROM sounds WHERE scope = 'entry' AND owner_id = ?", r.id);
     return {
       id: r.id, username: r.username, displayName: r.display_name, avatar: r.avatar ?? null, badges,
       admin: r.username === this.adminUser(),
+      entrySound: es ? { id: es.id, name: es.name, emoji: es.emoji } : null,
     };
+  }
+
+  /** Avisa todo mundo que vê esta pessoa (e o admin que mexeu) de que os dados dela mudaram. */
+  private pushUser(id: string, also: string): void {
+    const u = this.user(id);
+    if (u) this.sendTo([...this.audienceOf(id), id, also], 'user.update', u);
   }
 
   private adminUser(): string {
@@ -899,10 +1007,13 @@ export class Hub extends DurableObject<Env> {
   }
 
   private participants(channelId: string) {
+    const inRoom = new Set(this.sockets().filter((s) => s.att.vc === channelId).map((s) => s.att.uid));
     return this.sockets()
       .filter((s) => s.att.vc === channelId)
       .map((s) => ({
         userId: s.att.uid, muted: s.att.m, deafened: s.att.d, sessionId: s.att.sid, screenSessionId: s.att.ss ?? null, tracks: s.att.tr,
+        // Só vale enquanto quem recebeu o controle continua na sala.
+        controlBy: s.att.ct && inRoom.has(s.att.ct) ? s.att.ct : null,
       }));
   }
 
@@ -930,7 +1041,7 @@ export class Hub extends DurableObject<Env> {
     for (const s of this.sockets()) {
       if (s.att.uid === uid && s.att.vc && ids.has(s.att.vc)) {
         const vc = s.att.vc;
-        this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null });
+        this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null, ct: null });
         this.broadcastVoice(vc);
       }
     }

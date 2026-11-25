@@ -1,6 +1,7 @@
-import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, screen, session, shell } from 'electron';
 import { join } from 'node:path';
 import { autoUpdater } from 'electron-updater';
+import { applyInput, controlAvailable, startControl, stopControl, windowOfSource, type InputEvent, type Target } from './control';
 
 let win: BrowserWindow | null = null;
 const send = (channel: string, payload: unknown) => win?.webContents.send(channel, payload);
@@ -153,7 +154,60 @@ function setupUpdater(): void {
   ipcMain.handle('update:install', () => autoUpdater.quitAndInstall(true, true));
 
   setTimeout(check, 5000);
-  setInterval(check, 2 * 60 * 60 * 1000);
+  setInterval(check, 15 * 60 * 1000);
+}
+
+// ------------------------------------------------------------------ controle remoto (quem cede a tela)
+
+/** Atalho de emergência: corta o controle na hora, de dentro de qualquer jogo. */
+const STOP_KEY = 'Control+Shift+F12';
+
+function setupControl(): void {
+  let lastState = '';
+  const end = (reason: string | null) => {
+    stopControl();
+    globalShortcut.unregister(STOP_KEY);
+    lastState = '';
+    if (reason) send('control:ended', reason);
+  };
+
+  ipcMain.handle('control:available', () => controlAvailable());
+
+  ipcMain.handle('control:start', async (_e, sourceId: unknown) => {
+    const id = String(sourceId);
+    let target: Target;
+    const hwnd = windowOfSource(id);
+    if (hwnd) {
+      target = { kind: 'window', hwnd };
+    } else {
+      // Tela inteira: descobre os limites reais (em pixels) do monitor transmitido.
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+      const src = sources.find((s) => s.id === id);
+      const displays = screen.getAllDisplays();
+      const display = displays.find((d) => String(d.id) === src?.display_id) ?? (displays.length === 1 ? displays[0] : undefined);
+      if (!src || !display) return { ok: false, error: 'Não encontrei a tela transmitida.' };
+      const r = screen.dipToScreenRect(null, display.bounds);
+      target = { kind: 'screen', rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
+    }
+    const res = startControl(target);
+    if (res.ok) {
+      lastState = '';
+      globalShortcut.register(STOP_KEY, () => end('hotkey'));
+    }
+    return { ...res, kind: target.kind };
+  });
+
+  ipcMain.on('control:input', (_e, events: unknown) => {
+    if (!Array.isArray(events)) return;
+    const r = applyInput(events as InputEvent[]);
+    if (r === 'gone') return end('gone');
+    if (r !== lastState && r !== 'off') {
+      lastState = r;
+      send('control:state', r);
+    }
+  });
+
+  ipcMain.handle('control:stop', () => end(null));
 }
 
 // ------------------------------------------------------------------ links de convite (concord://convite/CODIGO)
@@ -223,9 +277,12 @@ if (!app.requestSingleInstanceLock()) {
     setupPtt();
     setupUpdater();
     setupInvites();
+    setupControl();
     createWindow();
   });
   app.on('will-quit', () => {
+    stopControl();
+    globalShortcut.unregisterAll();
     try {
       if (hookRunning) hook?.stop();
     } catch {

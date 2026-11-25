@@ -5,6 +5,7 @@ import { Avatar, Back, Icon, IconButton } from './ui';
 import { SoundBoard, SoundUpload, voiceGroup } from './Sounds';
 import { openProfile } from './Profile';
 import { Badges } from './Badges';
+import { beginControl, canHostControl, endControl, grantControl, revokeControl, toggleGameMouse } from './remote';
 
 const isScreen = (t: string) => t.startsWith('screen');
 
@@ -39,7 +40,7 @@ export function VoiceActions({ s }: { s: State }) {
         </button>
         {board && <SoundBoard s={s} onClose={() => setBoard(false)} onUpload={setUpload} />}
       </div>
-      {picker && <SharePicker onClose={() => setPicker(false)} onError={setError} />}
+      {picker && <SharePicker s={s} onClose={() => setPicker(false)} onError={setError} />}
       {upload && <SoundUpload s={s} scope={upload} groupId={group?.id ?? null} onClose={() => setUpload(null)} />}
     </>
   );
@@ -64,7 +65,8 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
         {streamers.length > 0 && (
           <div className="streams">
             {streamers.map((p) => (
-              <StreamTile key={p.userId} s={s} userId={p.userId} name={nameOf(p.userId)} mine={p.userId === me.id} canWatch={inRoom} />
+              <StreamTile key={p.userId} s={s} userId={p.userId} name={nameOf(p.userId)} mine={p.userId === me.id} canWatch={inRoom}
+                controlBy={p.controlBy ?? null} others={parts.filter((x) => x.userId !== me.id).map((x) => ({ id: x.userId, name: nameOf(x.userId) }))} />
             ))}
           </div>
         )}
@@ -109,8 +111,22 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
   );
 }
 
-function StreamTile({ s, userId, name, mine, canWatch }: { s: State; userId: string; name: string; mine: boolean; canWatch: boolean }) {
+function StreamTile({ s, userId, name, mine, canWatch, controlBy, others }: {
+  s: State; userId: string; name: string; mine: boolean; canWatch: boolean;
+  controlBy: string | null; others: { id: string; name: string }[];
+}) {
   const ref = useRef<HTMLVideoElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState('');
+  const c = s.control;
+  // Posso controlar esta tela? (quem transmite me escolheu)
+  const allowed = !mine && controlBy === s.me!.id;
+  const controlling = c?.role === 'controller' && c.peer === userId;
+  const hosting = mine && c?.role === 'host';
+  const give = (id: string) => {
+    setError('');
+    void (id ? grantControl(id) : revokeControl()).catch((e: Error) => setError(e.message));
+  };
   const watching = mine || Boolean(s.watching[userId]);
   const stream = watching ? screenStreamOf(userId) : null;
 
@@ -123,7 +139,7 @@ function StreamTile({ s, userId, name, mine, canWatch }: { s: State; userId: str
   }, [stream, s.mediaRev]);
 
   return (
-    <div className="stream">
+    <div className={`stream${controlling ? ' controlling' : ''}`} ref={box}>
       {mine && !stream ? (
         <div className="stream-cover">
           <span className="live">AO VIVO</span>
@@ -136,6 +152,43 @@ function StreamTile({ s, userId, name, mine, canWatch }: { s: State; userId: str
           <span className="live">AO VIVO</span>
           <b>{name} está transmitindo</b>
           <button className="btn primary" disabled={!canWatch} onClick={() => setWatching(userId, true)}>Assistir</button>
+        </div>
+      )}
+      {controlling && (
+        <div className="control-hud">
+          <span>🎮 Controlando a tela de {name}</span>
+          <span className="muted">{c.link === 'direta' ? 'ligação direta' : c.link === 'servidor' ? 'pelo servidor' : 'ligando…'}</span>
+          <button onClick={() => toggleGameMouse()} title="Para jogos que travam o mouse (tiro em primeira pessoa)">
+            Mouse de jogo: {c.gameMouse ? 'ligado' : 'desligado'} (F8)
+          </button>
+          <button onClick={() => endControl()}>Sair do controle</button>
+        </div>
+      )}
+      {allowed && watching && !controlling && (
+        <button className="control-start" onClick={() => box.current && ref.current && void beginControl(userId, box.current, ref.current)}>
+          🎮 Controlar a tela de {name}
+        </button>
+      )}
+      {mine && s.sharing && canHostControl && (
+        <div className="control-host">
+          {hosting ? (
+            <>
+              <span className="grow ellipsis">
+                🎮 <b>{others.find((o) => o.id === c.peer)?.name ?? 'Alguém'}</b> pode controlar esta tela
+                {c.focused === false ? ' — pausado: a janela do jogo não está na frente' : ''}
+              </span>
+              <button className="btn danger small" onClick={() => give('')}>Tirar o controle</button>
+            </>
+          ) : (
+            <>
+              <span className="grow ellipsis">Deixar um amigo jogar nesta tela:</span>
+              <select value="" onChange={(e) => give(e.target.value)}>
+                <option value="">Escolher quem…</option>
+                {others.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+            </>
+          )}
+          {error && <span className="error small">{error}</span>}
         </div>
       )}
       {watching && (
@@ -151,7 +204,11 @@ function StreamTile({ s, userId, name, mine, canWatch }: { s: State; userId: str
   );
 }
 
-function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: string) => void }) {
+function SharePicker({ s, onClose, onError }: { s: State; onClose: () => void; onError: (m: string) => void }) {
+  const [controller, setController] = useState('');
+  const room = (s.myVoice ? s.voice[s.myVoice.channelId] ?? [] : []).filter((p) => p.userId !== s.me!.id);
+  const group = voiceGroup(s);
+  const nameOf = (id: string) => group?.members.find((m) => m.id === id)?.displayName ?? 'Alguém';
   const [sources, setSources] = useState<{ id: string; name: string; thumbnail: string }[] | null>(null);
   const [selected, setSelected] = useState<string | undefined>();
   const [quality, setQuality] = useState<Quality>('1080p30');
@@ -173,6 +230,7 @@ function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: s
     setBusy(true);
     try {
       await startShare({ sourceId: selected, audio: audio && !android, quality });
+      if (controller) await grantControl(controller).catch((e: Error) => onError(`Transmissão iniciada, mas sem controle: ${e.message}`));
       onClose();
     } catch (e) {
       const msg = (e as Error).name === 'NotAllowedError' ? 'Transmissão cancelada.' : (e as Error).message;
@@ -212,6 +270,23 @@ function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: s
           </label>
         )}
         {audio && !android && <p className="muted small">O som do computador inclui a voz dos amigos no Concord, então quem assiste pode ouvir eco. Use fone e, se incomodar, desligue esta opção.</p>}
+        {desktop && canHostControl && (
+          <div className="field">
+            <span className="field-label">Deixar alguém controlar (jogar no seu lugar)</span>
+            <select value={controller} onChange={(e) => setController(e.target.value)}>
+              <option value="">Ninguém, só transmitir</option>
+              {room.map((p) => <option key={p.userId} value={p.userId}>{nameOf(p.userId)}</option>)}
+            </select>
+            {controller && (
+              <p className="muted small">
+                {selected?.startsWith('window:')
+                  ? 'Você escolheu uma janela: a pessoa só mexe nela, e só enquanto ela estiver na frente. '
+                  : 'Você escolheu a tela inteira: a pessoa mexe em tudo o que estiver nessa tela. Para liberar só o jogo, escolha a janela dele. '}
+                Para cortar o controle a qualquer momento, aperte Ctrl+Shift+F12.
+              </p>
+            )}
+          </div>
+        )}
         <div className="modal-actions">
           <button className="btn ghost" onClick={onClose}>Cancelar</button>
           <button className="btn primary" disabled={busy || (desktop && !selected)} onClick={() => void go()}>Começar a transmitir</button>

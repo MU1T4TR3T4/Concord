@@ -24,7 +24,12 @@ export function App() {
     const api = window.concord?.update;
     if (!api) return;
     void api.version().then((appVersion) => patch({ appVersion }));
-    api.onStatus((update) => patch({ update }));
+    api.onStatus((update) => {
+      // Achou versão nova: abre o aviso grande. Ele só some se a busca disser que não há mais nada.
+      if (update.state === 'available') patch({ update, updatePrompt: update.version ?? '' });
+      else if (update.state === 'none') patch({ update, updatePrompt: null });
+      else patch({ update });
+    });
   }, []);
 
   // Link de convite aberto pelo sistema (concord://convite/CODIGO) no app de computador.
@@ -39,8 +44,9 @@ export function App() {
     api.onInvite(take);
   }, []);
 
-  if (s.status === 'signed-out') return <AuthScreen />;
-  if (!s.me) return <div className="splash">Conectando ao Concord…</div>;
+  const gate = s.updatePrompt !== null && <UpdateGate s={s} />;
+  if (s.status === 'signed-out') return <><AuthScreen />{gate}</>;
+  if (!s.me) return <><div className="splash">Conectando ao Concord…</div>{gate}</>;
 
   const group = s.view.kind === 'group' ? s.groups.find((g) => g.id === (s.view as { groupId: string }).groupId) : undefined;
 
@@ -69,11 +75,58 @@ export function App() {
       {settings && <SettingsModal s={s} onClose={() => setSettings(false)} />}
       {s.profileUserId && <ProfileModal key={s.profileUserId} s={s} userId={s.profileUserId} />}
       {s.pendingInvite && s.status === 'ready' && <InviteModal code={s.pendingInvite} s={s} />}
+      {gate}
     </div>
   );
 }
 
 type Ask = (spec: FormSpec) => void;
+
+/** Aviso grande de versão nova (só no app de computador). Um clique baixa, instala e reabre. */
+function UpdateGate({ s }: { s: State }) {
+  const api = window.concord!.update;
+  const u = s.update;
+  const [started, setStarted] = useState(false);
+  const start = () => {
+    setStarted(true);
+    patch({ update: { state: 'downloading', version: s.updatePrompt ?? undefined, percent: 0 } });
+    void api.download();
+  };
+  // Terminou de baixar depois do clique: instala e reabre sozinho.
+  useEffect(() => {
+    if (started && u.state === 'ready') void api.install();
+  }, [started, u.state, api]);
+
+  const busy = u.state === 'downloading' || (started && u.state === 'ready');
+  return (
+    <div className="overlay update-gate">
+      <div className="modal update-card">
+        <img className="logo-img" src="./icon-192.png" alt="" />
+        <h2>Atualização disponível</h2>
+        <p className="muted">
+          Saiu a versão {s.updatePrompt || 'nova'} do Concord{s.appVersion ? ` (você está na ${s.appVersion})` : ''}.
+          Atualize para continuar usando com todo mundo na mesma versão.
+        </p>
+        {u.state === 'downloading' && (
+          <>
+            <div className="meter"><div className="meter-bar open" style={{ width: `${u.percent ?? 0}%` }} /></div>
+            <div className="muted">Baixando… {u.percent ?? 0}%</div>
+          </>
+        )}
+        {started && u.state === 'ready' && <div className="muted">Instalando. O Concord vai reabrir sozinho.</div>}
+        {u.state === 'error' && <div className="error">Não foi possível atualizar: {u.message ?? 'erro desconhecido'}</div>}
+        {!busy && (
+          <button className="btn primary wide big" onClick={u.state === 'ready' ? () => void api.install() : start}>
+            {u.state === 'error' ? 'Tentar de novo' : u.state === 'ready' ? 'Reiniciar e instalar' : 'Atualizar agora'}
+          </button>
+        )}
+        {u.state === 'error' && (
+          <button className="btn ghost" onClick={() => patch({ updatePrompt: null })}>Continuar sem atualizar por enquanto</button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ------------------------------------------------------------------ entrada
 

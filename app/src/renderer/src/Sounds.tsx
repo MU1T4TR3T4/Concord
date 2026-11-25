@@ -96,7 +96,7 @@ interface Draft {
 }
 
 /** Confere tamanho e duração antes de enviar; devolve a mensagem de erro, se houver. */
-async function validate(file: File): Promise<string | undefined> {
+export async function validate(file: File): Promise<string | undefined> {
   if (file.size > MAX_SOUND_BYTES) return 'Maior que 512 KB';
   const ctx = new AudioContext();
   try {

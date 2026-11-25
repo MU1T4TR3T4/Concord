@@ -47,6 +47,14 @@ declare global {
         pending(): Promise<string | null>;
         onInvite(cb: (url: string) => void): void;
       };
+      control?: {
+        available(): Promise<boolean>;
+        start(sourceId: string): Promise<{ ok: boolean; error?: string; kind?: 'window' | 'screen' }>;
+        input(events: unknown[]): void;
+        stop(): Promise<void>;
+        onState(cb: (state: string) => void): void;
+        onEnded(cb: (reason: string) => void): void;
+      };
       update: {
         version(): Promise<string>;
         check(): Promise<void>;
@@ -75,6 +83,9 @@ let channelId: string | null = null;
 let mySid: string | null = null;
 let share: { stream: MediaStream; mids: string[]; names: string[] } | null = null;
 let shareSeq = 0;
+/** Tela ou janela escolhida na transmissão em curso (o controle remoto precisa saber qual é). */
+let shareSource: string | null = null;
+export const shareSourceId = (): string | null => (share ? shareSource : null);
 /** Transmissão feita pelo app Android: o vídeo sai por uma conexão nativa, fora desta página. */
 let nativeShare: { names: string[] } | null = null;
 let nativeWaiting: { resolve: () => void; reject: (e: Error) => void } | null = null;
@@ -608,6 +619,7 @@ export async function startShare(opts: { sourceId?: string; audio: boolean; qual
     }
 
     share = { stream, mids: defs.map((d) => String(d.mid)), names: defs.map((d) => d.trackName) };
+    shareSource = opts.sourceId ?? null;
     video.onended = () => void stopShare(); // o usuário fechou a janela ou parou pelo sistema
     patch({ sharing: true });
     bump();

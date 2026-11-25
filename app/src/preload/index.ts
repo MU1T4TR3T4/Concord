@@ -19,6 +19,18 @@ contextBridge.exposeInMainWorld('concord', {
       ipcRenderer.on('invite:open', (_e, url: string) => cb(url));
     },
   },
+  control: {
+    available: () => ipcRenderer.invoke('control:available'),
+    start: (sourceId: string) => ipcRenderer.invoke('control:start', sourceId),
+    input: (events: unknown[]) => ipcRenderer.send('control:input', events),
+    stop: () => ipcRenderer.invoke('control:stop'),
+    onState: (cb: (state: string) => void) => {
+      ipcRenderer.on('control:state', (_e, state: string) => cb(state));
+    },
+    onEnded: (cb: (reason: string) => void) => {
+      ipcRenderer.on('control:ended', (_e, reason: string) => cb(reason));
+    },
+  },
   update: {
     version: () => ipcRenderer.invoke('update:version'),
     check: () => ipcRenderer.invoke('update:check'),

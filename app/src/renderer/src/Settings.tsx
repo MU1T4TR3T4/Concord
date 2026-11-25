@@ -220,7 +220,7 @@ function UpdateTab({ s }: { s: State }) {
         {u.state === 'ready' && <button className="btn primary" onClick={() => void api.install()}>Reiniciar e instalar</button>}
         {(u.state === 'idle' || u.state === 'none' || u.state === 'error') && <button className="btn primary" onClick={() => void api.check()}>Procurar atualização</button>}
       </div>
-      <p className="muted small">O Concord procura atualizações sozinho ao abrir e a cada duas horas. Quando houver uma, aparece um ponto na engrenagem.</p>
+      <p className="muted small">O Concord procura atualizações sozinho ao abrir e a cada 15 minutos. Quando houver uma, aparece um aviso no meio da tela.</p>
     </>
   );
 }

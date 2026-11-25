@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { patch, request, setView, type State, type User } from './store';
+import { patch, request, setView, uploadSound, type State, type User } from './store';
+import { validate } from './Sounds';
 import { Avatar, Icon } from './ui';
 import { BADGE_GROUPS, badgesOf, findUser } from './Badges';
 
@@ -129,6 +130,7 @@ function AdminTools({ s, user, inCall, busy, run }: {
           </div>
         </div>
       ))}
+      <EntrySound s={s} user={user} busy={busy} run={run} />
       {(inCall || canKick) && <div className="admin-sub">Ações</div>}
       {inCall && user.id !== s.me!.id && (
         <button className="btn danger wide" disabled={busy} onClick={() => void run('admin.voice.kick', { userId: user.id })}>
@@ -143,6 +145,60 @@ function AdminTools({ s, user, inCall, busy, run }: {
           {confirmKick ? `Confirmar: remover de "${group.name}"` : `Remover do grupo "${group.name}"`}
         </button>
       )}
+    </div>
+  );
+}
+
+/** Som que toca para a sala quando a pessoa entra em uma chamada. Só o admin define. */
+function EntrySound({ s, user, busy, run }: {
+  s: State; user: User; busy: boolean; run: (op: string, d: Record<string, unknown>) => Promise<void>;
+}) {
+  const [pick, setPick] = useState('');
+  const [note, setNote] = useState('');
+  const [sending, setSending] = useState(false);
+  const groupName = (id: string | null | undefined) => s.groups.find((g) => g.id === id)?.name ?? 'Grupo';
+  const options = [...s.sounds].sort((a, b) => a.name.localeCompare(b.name));
+
+  async function upload(file: File | undefined) {
+    if (!file) return;
+    setNote('');
+    const problem = await validate(file);
+    if (problem) return setNote(`${file.name}: ${problem}`);
+    setSending(true);
+    try {
+      const name = file.name.replace(/\.[^.]+$/, '').slice(0, 32) || 'Entrada';
+      await uploadSound(file, { scope: 'entry', userId: user.id, name, emoji: '🚪' });
+    } catch (err) {
+      setNote((err as Error).message);
+    }
+    setSending(false);
+  }
+
+  return (
+    <div>
+      <div className="admin-sub">Som de entrada</div>
+      <div className="entry-now">
+        {user.entrySound
+          ? <><span className="grow ellipsis">{user.entrySound.emoji} {user.entrySound.name}</span>
+              <button type="button" className="btn ghost small" disabled={busy} onClick={() => void run('admin.entry.clear', { userId: user.id })}>Remover</button></>
+          : <span className="muted">Nenhum. Toca para a sala quando a pessoa entra em uma chamada.</span>}
+      </div>
+      <div className="entry-row">
+        <select value={pick} onChange={(e) => setPick(e.target.value)}>
+          <option value="">Escolher um som que já existe…</option>
+          {options.map((x) => (
+            <option key={x.id} value={x.id}>{x.emoji} {x.name} — {x.scope === 'group' ? groupName(x.groupId) : 'meus sons'}</option>
+          ))}
+        </select>
+        <button type="button" className="btn primary small" disabled={busy || !pick}
+          onClick={() => { void run('admin.entry.set', { userId: user.id, soundId: pick }); setPick(''); }}>Definir</button>
+      </div>
+      <label className="btn ghost small entry-upload">
+        {sending ? 'Enviando…' : 'Enviar um som novo (até 10 s)'}
+        <input type="file" accept="audio/*,video/webm,video/mp4,.mp3,.ogg,.wav,.m4a" hidden disabled={sending}
+          onChange={(e) => { void upload(e.target.files?.[0]); e.target.value = ''; }} />
+      </label>
+      {note && <div className="error">{note}</div>}
     </div>
   );
 }

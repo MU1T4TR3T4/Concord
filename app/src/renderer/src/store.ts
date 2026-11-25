@@ -15,6 +15,8 @@ export interface User {
   badges?: string[];
   /** É o admin geral do servidor? */
   admin?: boolean;
+  /** Som que toca para a sala quando a pessoa entra em uma chamada (escolhido pelo admin). */
+  entrySound?: { id: string; name: string; emoji: string } | null;
 }
 
 export interface Sound {
@@ -60,6 +62,8 @@ export interface Participant {
   /** Sessão separada da tela, usada por quem transmite pelo app Android. */
   screenSessionId?: string | null;
   tracks: string[];
+  /** Quem esta pessoa autorizou a controlar a tela que ela transmite. */
+  controlBy?: string | null;
 }
 
 export interface PttKey {
@@ -161,6 +165,19 @@ export interface State {
   profileUserId: string | null;
   /** Aviso passageiro no topo (ex.: "você foi removido do grupo"). */
   notice: string | null;
+  /** Versão nova encontrada: enquanto preenchido, um aviso grande cobre a tela até a pessoa atualizar. */
+  updatePrompt: string | null;
+  /** Controle remoto em curso neste aparelho: cedi minha tela ('host') ou estou controlando a de alguém. */
+  control: {
+    role: 'host' | 'controller';
+    peer: string;
+    /** 'direta' = ligação entre os dois aparelhos; 'servidor' = reserva, um pouco mais lenta. */
+    link: 'direta' | 'servidor' | 'ligando';
+    /** Só para quem cedeu: a janela do jogo está em primeiro plano? */
+    focused?: boolean;
+    /** Só para quem controla: mouse travado no jogo (movimento relativo). */
+    gameMouse?: boolean;
+  } | null;
 }
 
 /** Aceita "ABCD2345", "?convite=ABCD2345" ou "concord://convite/ABCD2345". */
@@ -197,6 +214,18 @@ function inviteFromUrl(): string | null {
 export function clearInvite(): void {
   sessionStorage.removeItem(INVITE_KEY);
   set({ pendingInvite: null });
+}
+
+/** Ligações com o controle remoto (remote.ts), preenchidas quando ele carrega. */
+export const remoteHooks = {
+  signal: (_from: string, _data: any): void => undefined,
+  input: (_from: string, _events: unknown[]): void => undefined,
+  ended: (_hostId: string): void => undefined,
+};
+
+/** Envia sem esperar resposta (comandos do controle remoto, muitos por segundo). */
+export function sendNow(op: string, d: Record<string, unknown>): void {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ op, d }));
 }
 
 /** Ligações com o motor de voz (voice.ts), preenchidas quando ele carrega. */
@@ -245,6 +274,8 @@ const initial: State = {
   sounds: [],
   profileUserId: null,
   notice: null,
+  updatePrompt: null,
+  control: null,
 };
 
 let state = initial;
@@ -451,6 +482,15 @@ function handleEvent(ev: string, d: any): void {
       set({ groups: exists ? state.groups.map((x) => (x.id === g.id ? g : x)) : [...state.groups, g], view, myVoice });
       break;
     }
+    case 'rc.signal':
+      remoteHooks.signal(d.from, d.data);
+      break;
+    case 'rc.input':
+      remoteHooks.input(d.from, d.e);
+      break;
+    case 'rc.ended':
+      remoteHooks.ended(d.hostId);
+      break;
     case 'voice.kicked':
       if (state.myVoice?.channelId === d.channelId) set({ myVoice: null, notice: 'O admin tirou você da chamada.' });
       break;
@@ -584,8 +624,12 @@ async function upload(path: string, body: Blob, type: string): Promise<any> {
 
 export const uploadAvatar = (image: Blob) => upload('/api/avatar', image, image.type);
 
-export function uploadSound(file: Blob, o: { scope: 'group' | 'user'; groupId?: string | null; name: string; emoji: string }): Promise<Sound> {
+export function uploadSound(
+  file: Blob,
+  o: { scope: 'group' | 'user' | 'entry'; groupId?: string | null; userId?: string; name: string; emoji: string },
+): Promise<Sound> {
   const q = new URLSearchParams({ scope: o.scope, name: o.name, emoji: o.emoji });
+  if (o.scope === 'entry' && o.userId) q.set('userId', o.userId);
   if (o.scope === 'group' && o.groupId) q.set('groupId', o.groupId);
   return upload(`/api/sounds?${q}`, file, file.type || 'audio/mpeg');
 }
@@ -628,10 +672,12 @@ export async function loadHistory(channelId: string, older = false): Promise<voi
 
 export async function joinVoice(channelId: string, keep?: { muted: boolean; deafened: boolean }): Promise<void> {
   if (state.myVoice?.channelId === channelId) return;
-  await request('voice.join', { channelId });
+  const joined = await request<{ entrySound?: string | null }>('voice.join', { channelId });
   const muted = keep?.muted ?? false;
   const deafened = keep?.deafened ?? false;
   set({ myVoice: { channelId, muted, deafened }, watching: {}, speaking: {}, sharing: false, micError: false });
+  // Meu som de entrada: os outros recebem pelo servidor; eu toco aqui, já dentro da sala.
+  if (joined?.entrySound && state.me) voiceHooks.playSound(joined.entrySound, state.me.id);
   if (muted || deafened) await request('voice.state', { muted, deafened });
   voiceHooks.start(channelId);
 }

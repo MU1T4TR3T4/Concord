@@ -32,7 +32,13 @@ try {
     const out = { url: location.protocol, tela: document.querySelector('.auth-card') ? 'login' : document.querySelector('.shell') ? 'app' : 'vazia' };
     out.versao = await window.concord.update.version();
     out.conviteNaTelaDeLogin = Boolean(document.querySelector('.auth-card .success'));
-    out.fontesDeCaptura = (await window.concord.capture.sources()).length;
+    const fontes = await window.concord.capture.sources();
+    out.fontesDeCaptura = fontes.length;
+    // Controle remoto: a biblioteca nativa carrega dentro do app empacotado e aceita uma tela?
+    out.controleDisponivel = await window.concord.control.available();
+    const tela = fontes.find((f) => f.id.startsWith('screen:'));
+    out.controleNaTela = tela ? await window.concord.control.start(tela.id) : 'sem tela';
+    await window.concord.control.stop();
     out.pttConfigura = await window.concord.ptt.configure({ type: 'key', code: 58 });
     await window.concord.ptt.configure(null);
     const ctx = new AudioContext();
