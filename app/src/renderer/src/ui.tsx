@@ -34,7 +34,7 @@ export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; s
   );
 }
 
-const AVATAR_COLORS = ['#ff7a59', '#3ecf8e', '#5aa9ff', '#c58bff', '#ffb84d', '#ff6b9a', '#4dd4d4'];
+const AVATAR_COLORS = ['#ffb39a', '#3ecf8e', '#5aa9ff', '#b094ff', '#ffb84d', '#ff6b9a', '#4dd4d4'];
 
 export function Avatar({ name, id, size = 34, online }: { name: string; id: string; size?: number; online?: boolean }) {
   let h = 0;

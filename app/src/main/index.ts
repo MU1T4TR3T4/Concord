@@ -164,7 +164,7 @@ function createWindow(): void {
     height: 800,
     minWidth: 420,
     minHeight: 560,
-    backgroundColor: '#12151a',
+    backgroundColor: '#120e1d',
     autoHideMenuBar: true,
     title: 'Concord',
     webPreferences: {
