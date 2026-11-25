@@ -14,6 +14,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
+        shell: bash
         working-directory: app
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +26,18 @@ jobs:
       - run: npm ci
       # A tag tem de bater com a versão do package.json, senão o app não acha a atualização.
       - name: Conferir versão
-        shell: bash
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-      - run: npm run release
+      - name: Gerar instalador
+        run: |
+          set -o pipefail
+          npm run dist 2>&1 | tee build.log || {
+            tail -n 25 build.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          }
+      # O app procura latest.yml, o instalador e o .blockmap na Release da versão.
+      - name: Publicar Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Concord $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" release/Concord-Setup-*.exe release/Concord-Setup-*.exe.blockmap release/latest.yml --clobber
