@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from 'react';
 
-export const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:8787';
+// No app de computador a URL vem do build; na versão web o servidor é a própria origem da página.
+export const SERVER_URL: string =
+  import.meta.env.VITE_SERVER_URL || (import.meta.env.DEV ? 'http://localhost:8787' : location.origin);
 const TOKEN_KEY = 'concord.token';
 
 export interface User {
@@ -42,6 +44,56 @@ export interface Participant {
   tracks: string[];
 }
 
+export interface PttKey {
+  type: 'key' | 'mouse';
+  code: number;
+  label: string;
+}
+
+export interface Settings {
+  inputDeviceId: string;
+  outputDeviceId: string;
+  /** Ganho do microfone: 1 = normal, até 2 = dobro. */
+  inputVolume: number;
+  /** Volume geral do que eu ouço, de 0 a 1. */
+  outputVolume: number;
+  inputMode: 'voice' | 'ptt';
+  /** Limite do portão de voz (RMS de 0 a 1); abaixo disso o microfone não transmite. */
+  sensitivity: number;
+  pttKey: PttKey | null;
+  noiseSuppression: boolean;
+  echoCancellation: boolean;
+  autoGain: boolean;
+}
+
+export interface UpdateStatus {
+  state: 'idle' | 'checking' | 'available' | 'none' | 'downloading' | 'ready' | 'error';
+  version?: string;
+  percent?: number;
+  message?: string;
+}
+
+const SETTINGS_KEY = 'concord.settings';
+const DEFAULT_SETTINGS: Settings = {
+  inputDeviceId: 'default',
+  outputDeviceId: 'default',
+  inputVolume: 1,
+  outputVolume: 1,
+  inputMode: 'voice',
+  sensitivity: 0.015,
+  pttKey: null,
+  noiseSuppression: true,
+  echoCancellation: true,
+  autoGain: true,
+};
+function loadSettings(): Settings {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
 export type View =
   | { kind: 'home'; dmUserId?: string }
   | { kind: 'group'; groupId: string; channelId?: string };
@@ -74,6 +126,12 @@ export interface State {
   micError: boolean;
   /** Muda sempre que um vídeo entra ou sai, para a tela se redesenhar. */
   mediaRev: number;
+  settings: Settings;
+  /** Estado da atualização automática (só no app de computador). */
+  update: UpdateStatus;
+  appVersion: string;
+  /** Em telas estreitas: true mostra o conteúdo, false mostra a navegação. */
+  mobileMain: boolean;
 }
 
 /** Ligações com o motor de voz (voice.ts), preenchidas quando ele carrega. */
@@ -82,6 +140,7 @@ export const voiceHooks = {
   stop: (): void => undefined,
   sync: (): void => undefined,
   flags: (): void => undefined,
+  settings: (_changed: (keyof Settings)[]): void => undefined,
 };
 
 const VOLUMES_KEY = 'concord.volumes';
@@ -112,6 +171,10 @@ const initial: State = {
   volumes: loadVolumes(),
   micError: false,
   mediaRev: 0,
+  settings: loadSettings(),
+  update: { state: 'idle' },
+  appVersion: '',
+  mobileMain: false,
 };
 
 let state = initial;
@@ -127,6 +190,13 @@ export function getState(): State {
 }
 
 export const patch = set;
+
+export function updateSettings(change: Partial<Settings>): void {
+  const settings = { ...state.settings, ...change };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  set({ settings });
+  voiceHooks.settings(Object.keys(change) as (keyof Settings)[]);
+}
 
 export function setVolume(userId: string, volume: number): void {
   const volumes = { ...state.volumes, [userId]: volume };
@@ -373,7 +443,7 @@ function signOutLocal(): void {
   const old = ws;
   ws = null;
   old?.close();
-  state = { ...initial, status: 'signed-out' };
+  state = { ...initial, status: 'signed-out', settings: state.settings, volumes: state.volumes, update: state.update, appVersion: state.appVersion };
   for (const l of listeners) l();
 }
 
@@ -383,8 +453,8 @@ export async function logout(): Promise<void> {
   signOutLocal();
 }
 
-export function setView(view: View): void {
-  set({ view });
+export function setView(view: View, showMain = true): void {
+  set({ view, mobileMain: showMain });
   const ch = activeTextChannel();
   if (ch) {
     clearUnread(ch);
@@ -395,7 +465,8 @@ export function setView(view: View): void {
 export function openGroup(groupId: string): void {
   const g = state.groups.find((x) => x.id === groupId);
   if (!g) return;
-  setView({ kind: 'group', groupId, channelId: g.channels.find((c) => c.type === 'text')?.id });
+  // No celular, abrir um grupo mostra primeiro a lista de salas dele.
+  setView({ kind: 'group', groupId, channelId: g.channels.find((c) => c.type === 'text')?.id }, false);
 }
 
 export function clearUnread(channelId: string): void {

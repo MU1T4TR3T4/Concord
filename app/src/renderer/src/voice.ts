@@ -1,6 +1,6 @@
 // Motor de voz e transmissão de tela: uma conexão WebRTC com o SFU da Cloudflare por sala.
 // O servidor do Concord repassa as chamadas ao SFU (o segredo nunca chega ao aplicativo).
-import { getState, patch, request, voiceHooks } from './store';
+import { getState, patch, request, voiceHooks, type PttKey, type Settings, type UpdateStatus } from './store';
 
 export type Quality = '720p30' | '1080p30' | '1080p60';
 
@@ -24,6 +24,18 @@ declare global {
         sources(): Promise<CaptureSource[]>;
         choose(id: string, audio: boolean): Promise<void>;
       };
+      ptt: {
+        configure(key: { type: 'key' | 'mouse'; code: number } | null): Promise<boolean>;
+        capture(): Promise<{ type: 'key' | 'mouse'; code: number } | null>;
+        onState(cb: (down: boolean) => void): void;
+      };
+      update: {
+        version(): Promise<string>;
+        check(): Promise<void>;
+        download(): Promise<void>;
+        install(): Promise<void>;
+        onStatus(cb: (status: UpdateStatus) => void): void;
+      };
     };
   }
 }
@@ -43,7 +55,6 @@ let gen = 0; // muda a cada entrada/saída; operações antigas se cancelam ao n
 let pc: RTCPeerConnection | null = null;
 let channelId: string | null = null;
 let mySid: string | null = null;
-let mic: MediaStream | null = null;
 let share: { stream: MediaStream; mids: string[]; names: string[] } | null = null;
 let shareSeq = 0;
 let retries = 0;
@@ -80,11 +91,139 @@ function waitIce(conn: RTCPeerConnection): Promise<void> {
   });
 }
 
-async function getMic(): Promise<MediaStream> {
-  if (import.meta.env.DEV && localStorage.getItem('concord.fakeMedia')) return fakeAudio();
+// ------------------------------------------------------------------ microfone
+// microfone -> volume de entrada -> portão (atividade de voz ou apertar-para-falar) -> faixa enviada.
+// A faixa enviada é sempre a mesma; trocar de aparelho só troca a fonte, sem renegociar a chamada.
+
+interface Input {
+  ctx: AudioContext;
+  raw: MediaStream;
+  source: MediaStreamAudioSourceNode;
+  vol: GainNode;
+  gate: AudioWorkletNode | null;
+  dest: MediaStreamAudioDestinationNode;
+}
+
+let input: Input | null = null;
+let inputBuilding: Promise<Input> | null = null;
+const inputUsers = { voice: false, preview: false };
+let pttDown = false;
+let localOpen = false;
+const levelListeners = new Set<(level: number, open: boolean) => void>();
+
+function openRaw(): Promise<MediaStream> {
+  if (import.meta.env.DEV && localStorage.getItem('concord.fakeMedia')) return Promise.resolve(fakeAudio());
+  const s = getState().settings;
   return navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: {
+      deviceId: s.inputDeviceId !== 'default' ? { exact: s.inputDeviceId } : undefined,
+      echoCancellation: s.echoCancellation,
+      noiseSuppression: s.noiseSuppression,
+      autoGainControl: s.autoGain,
+    },
   });
+}
+
+function postGate(): void {
+  const s = getState().settings;
+  // Sem tecla definida (ou fora do app de computador), "apertar para falar" não teria como abrir.
+  const ptt = s.inputMode === 'ptt' && Boolean(s.pttKey) && Boolean(window.concord?.ptt);
+  input?.gate?.port.postMessage({ mode: ptt ? 'ptt' : 'voice', threshold: s.sensitivity, ptt: pttDown });
+}
+
+async function buildInput(): Promise<Input> {
+  const raw = await openRaw();
+  const ctx = new AudioContext();
+  void ctx.resume().catch(() => undefined);
+  let gate: AudioWorkletNode | null = null;
+  try {
+    await ctx.audioWorklet.addModule(new URL('gate-worklet.js', document.baseURI).href);
+    gate = new AudioWorkletNode(ctx, 'concord-gate');
+  } catch (e) {
+    console.warn('[voz] portão de voz indisponível; microfone fica sempre aberto', e);
+  }
+  const source = ctx.createMediaStreamSource(raw);
+  const vol = ctx.createGain();
+  vol.gain.value = getState().settings.inputVolume;
+  const dest = ctx.createMediaStreamDestination();
+  source.connect(vol);
+  if (gate) {
+    vol.connect(gate).connect(dest);
+    gate.port.onmessage = (e) => {
+      const { level, open } = e.data as { level: number; open: boolean };
+      for (const l of levelListeners) l(level, open);
+      if (open !== localOpen) {
+        localOpen = open;
+        pushSpeaking();
+      }
+    };
+  } else {
+    vol.connect(dest);
+  }
+  input = { ctx, raw, source, vol, gate, dest };
+  postGate();
+  return input;
+}
+
+async function acquireInput(user: 'voice' | 'preview'): Promise<Input> {
+  inputUsers[user] = true;
+  if (input) return input;
+  inputBuilding ??= buildInput().finally(() => (inputBuilding = null));
+  try {
+    const built = await inputBuilding;
+    if (!inputUsers.voice && !inputUsers.preview) closeInput();
+    return built;
+  } catch (e) {
+    inputUsers[user] = false;
+    throw e;
+  }
+}
+
+function releaseInput(user: 'voice' | 'preview'): void {
+  inputUsers[user] = false;
+  if (!inputUsers.voice && !inputUsers.preview) closeInput();
+}
+
+function closeInput(): void {
+  const cur = input;
+  if (!cur) return;
+  input = null;
+  localOpen = false;
+  cur.raw.getTracks().forEach((t) => t.stop());
+  void cur.ctx.close().catch(() => undefined);
+}
+
+/** Troca o aparelho (ou o tratamento de ruído) mantendo a mesma faixa enviada. */
+async function replaceRaw(): Promise<void> {
+  const cur = input;
+  if (!cur) return;
+  try {
+    const raw = await openRaw();
+    if (input !== cur) return raw.getTracks().forEach((t) => t.stop());
+    cur.source.disconnect();
+    cur.raw.getTracks().forEach((t) => t.stop());
+    cur.raw = raw;
+    cur.source = cur.ctx.createMediaStreamSource(raw);
+    cur.source.connect(cur.vol);
+    patch({ micError: false });
+  } catch {
+    patch({ micError: true });
+  }
+}
+
+export function startMicPreview(): Promise<unknown> {
+  return acquireInput('preview').catch(() => patch({ micError: true }));
+}
+export function stopMicPreview(): void {
+  releaseInput('preview');
+}
+export function onMicLevel(cb: (level: number, open: boolean) => void): () => void {
+  levelListeners.add(cb);
+  return () => levelListeners.delete(cb);
+}
+
+function micTrack(): MediaStreamTrack | null {
+  return inputUsers.voice && input ? input.dest.stream.getAudioTracks()[0] : null;
 }
 
 // ------------------------------------------------------------------ entrar / sair
@@ -113,20 +252,15 @@ async function setup(g: number): Promise<void> {
     if (retries++ < 3 && channelId) setTimeout(() => channelId && conn === pc && start(channelId, true), 1000);
   };
 
-  let stream: MediaStream | null = null;
   try {
-    stream = await getMic();
+    await acquireInput('voice');
   } catch {
     patch({ micError: true });
   }
-  if (g !== gen) {
-    stream?.getTracks().forEach((t) => t.stop());
-    return;
-  }
-  mic = stream;
+  if (g !== gen) return;
 
-  if (stream) {
-    const track = stream.getAudioTracks()[0];
+  const track = micTrack();
+  if (track) {
     track.enabled = !getState().myVoice?.muted;
     const tr = conn.addTransceiver(track, { direction: 'sendonly' });
     await conn.setLocalDescription(await conn.createOffer());
@@ -137,8 +271,9 @@ async function setup(g: number): Promise<void> {
     });
     if (g !== gen) return;
     await conn.setRemoteDescription(res.sessionDescription);
+    // Sem o portão (worklet indisponível), mede o próprio microfone do jeito simples.
     const me = getState().me;
-    if (me) watchLevel(me.id, stream, true);
+    if (me && input && !input.gate) watchLevel(me.id, input.dest.stream, true);
     await publish();
   }
   await syncNow(g);
@@ -155,10 +290,10 @@ function stop(): void {
   byMid.clear();
   screenStreams.clear();
   for (const id of [...levels.keys()]) unwatchLevel(id);
-  mic?.getTracks().forEach((t) => t.stop());
+  releaseInput('voice');
   share?.stream.getTracks().forEach((t) => t.stop());
-  mic = null;
   share = null;
+  remoteSpeaking.clear();
   pc?.close();
   pc = null;
   mySid = null;
@@ -167,7 +302,7 @@ function stop(): void {
 }
 
 function publish(): Promise<unknown> {
-  const tracks = [...(mic ? ['mic'] : []), ...(share?.names ?? [])];
+  const tracks = [...(micTrack() ? ['mic'] : []), ...(share?.names ?? [])];
   return request('voice.state', { tracks });
 }
 
@@ -296,12 +431,32 @@ async function closeMids(conn: RTCPeerConnection, mids: string[]): Promise<void>
 
 function applyFlags(): void {
   const s = getState();
-  if (mic) for (const t of mic.getAudioTracks()) t.enabled = !s.myVoice?.muted;
+  const track = micTrack();
+  if (track) track.enabled = !s.myVoice?.muted;
+  const sink = s.settings.outputDeviceId === 'default' ? '' : s.settings.outputDeviceId;
   for (const [key, el] of audioEls) {
     const item = pulled.get(key);
     el.muted = Boolean(s.myVoice?.deafened);
-    el.volume = Math.min(1, Math.max(0, item ? (s.volumes[item.userId] ?? 1) : 1));
+    const user = item ? (s.volumes[item.userId] ?? 1) : 1;
+    el.volume = Math.min(1, Math.max(0, user * s.settings.outputVolume));
+    // Escolha do aparelho de saída (não existe em todos os navegadores de celular).
+    const out = el as HTMLAudioElement & { sinkId?: string; setSinkId?: (id: string) => Promise<void> };
+    if (out.setSinkId && out.sinkId !== sink) void out.setSinkId(sink).catch(() => undefined);
   }
+  pushSpeaking();
+}
+
+const remoteSpeaking = new Set<string>();
+
+/** Junta "eu falando" (portão aberto) com os outros e atualiza a tela só quando muda. */
+function pushSpeaking(): void {
+  const s = getState();
+  const next: Record<string, true> = {};
+  for (const id of remoteSpeaking) next[id] = true;
+  if (localOpen && s.me && s.myVoice && !s.myVoice.muted && micTrack()) next[s.me.id] = true;
+  const a = Object.keys(next);
+  const b = Object.keys(s.speaking);
+  if (a.length !== b.length || a.some((k) => !s.speaking[k])) patch({ speaking: next });
 }
 
 let audioCtx: AudioContext | null = null;
@@ -325,29 +480,28 @@ function unwatchLevel(userId: string): void {
   if (!l) return;
   l.source.disconnect();
   levels.delete(userId);
+  remoteSpeaking.delete(userId);
   if (levels.size === 0) {
     clearInterval(levelTimer);
     levelTimer = undefined;
-    if (Object.keys(getState().speaking).length) patch({ speaking: {} });
   }
+  pushSpeaking();
 }
 
 const buf = new Uint8Array(512);
 function pollLevels(): void {
   const s = getState();
   const now = Date.now();
-  const speaking: Record<string, true> = {};
   for (const [userId, l] of levels) {
     l.analyser.getByteTimeDomainData(buf);
     let sum = 0;
     for (const v of buf) sum += (v - 128) * (v - 128);
     const rms = Math.sqrt(sum / buf.length) / 128;
     if (rms > 0.02 && !(l.local && s.myVoice?.muted)) l.last = now;
-    if (now - l.last < 350) speaking[userId] = true;
+    if (now - l.last < 350) remoteSpeaking.add(userId);
+    else remoteSpeaking.delete(userId);
   }
-  const a = Object.keys(speaking);
-  const b = Object.keys(s.speaking);
-  if (a.length !== b.length || a.some((k) => !s.speaking[k])) patch({ speaking });
+  pushSpeaking();
 }
 
 // ------------------------------------------------------------------ transmitir a tela
@@ -368,7 +522,9 @@ export async function startShare(opts: { sourceId?: string; audio: boolean; qual
     if (window.concord?.capture && opts.sourceId) await window.concord.capture.choose(opts.sourceId, opts.audio);
     stream = await navigator.mediaDevices.getDisplayMedia({
       video: { width: { max: q.w }, height: { max: q.h }, frameRate: { ideal: q.fps, max: q.fps } },
-      audio: opts.audio,
+      // restrictOwnAudio tira da captura o som que o próprio Concord toca (a voz dos amigos),
+      // que era a causa do eco. Verificado com scripts/echo-test.cjs.
+      audio: opts.audio ? ({ restrictOwnAudio: true } as MediaTrackConstraints) : false,
     });
   }
 
@@ -479,8 +635,30 @@ voiceHooks.start = start;
 voiceHooks.stop = stop;
 voiceHooks.sync = () => void enqueue(syncNow);
 voiceHooks.flags = applyFlags;
+voiceHooks.settings = (changed: (keyof Settings)[]) => {
+  const has = (...keys: (keyof Settings)[]) => keys.some((k) => changed.includes(k));
+  if (has('inputDeviceId', 'noiseSuppression', 'echoCancellation', 'autoGain')) void replaceRaw();
+  if (has('inputVolume') && input) input.vol.gain.value = getState().settings.inputVolume;
+  if (has('inputMode', 'sensitivity', 'pttKey')) postGate();
+  if (has('inputMode', 'pttKey')) configurePtt();
+  if (has('outputDeviceId', 'outputVolume')) applyFlags();
+};
+
+// ------------------------------------------------------------------ apertar para falar (app de computador)
+
+function configurePtt(): void {
+  const s = getState().settings;
+  const key: PttKey | null = s.inputMode === 'ptt' ? s.pttKey : null;
+  void window.concord?.ptt?.configure(key ? { type: key.type, code: key.code } : null).catch(() => undefined);
+}
+
+window.concord?.ptt?.onState((down) => {
+  pttDown = down;
+  postGate();
+});
+configurePtt();
 
 if (import.meta.env.DEV) {
   // Só em desenvolvimento: permite inspecionar a conexão pelo console.
-  (window as any).__voice = { pc: () => pc, pulled, audioEls, screenStreams, share: () => share };
+  (window as any).__voice = { pc: () => pc, pulled, audioEls, screenStreams, share: () => share, input: () => input };
 }

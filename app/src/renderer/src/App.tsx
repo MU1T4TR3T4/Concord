@@ -1,14 +1,25 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
+  patch,
   activeTextChannel, clearUnread, dmChannelId, joinVoice, leaveVoice, loadHistory, login, logout, openGroup,
   register, request, setView, setVoiceFlags, useStore, type Friend, type Group, type State, type User,
 } from './store';
-import { Avatar, FormModal, Icon, IconButton, type FormSpec } from './ui';
+import { Avatar, Back, FormModal, Icon, IconButton, type FormSpec } from './ui';
+import { SettingsModal } from './Settings';
 import { VoiceStage } from './VoiceStage';
 
 export function App() {
   const s = useStore();
   const [form, setForm] = useState<FormSpec | null>(null);
+  const [settings, setSettings] = useState(false);
+
+  // Atualização automática: só existe no app de computador.
+  useEffect(() => {
+    const api = window.concord?.update;
+    if (!api) return;
+    void api.version().then((appVersion) => patch({ appVersion }));
+    api.onStatus((update) => patch({ update }));
+  }, []);
 
   if (s.status === 'signed-out') return <AuthScreen />;
   if (!s.me) return <div className="splash">Conectando ao Concord…</div>;
@@ -16,19 +27,20 @@ export function App() {
   const group = s.view.kind === 'group' ? s.groups.find((g) => g.id === (s.view as { groupId: string }).groupId) : undefined;
 
   return (
-    <div className="shell">
+    <div className={`shell${s.mobileMain ? ' show-main' : ''}`}>
       {s.status === 'reconnecting' && <div className="banner">Conexão perdida. Reconectando…</div>}
       <Rail s={s} ask={setForm} />
       <aside className="sidebar">
         {group ? <GroupSidebar s={s} group={group} ask={setForm} /> : <HomeSidebar s={s} />}
         <VoicePanel s={s} />
-        <UserPanel s={s} ask={setForm} />
+        <UserPanel s={s} openSettings={() => setSettings(true)} />
       </aside>
       <main className="main">
         {group ? <GroupMain s={s} group={group} /> : <HomeMain s={s} ask={setForm} />}
       </main>
       {group && <Members s={s} group={group} />}
       {form && <FormModal spec={form} onClose={() => setForm(null)} />}
+      {settings && <SettingsModal s={s} onClose={() => setSettings(false)} />}
     </div>
   );
 }
@@ -62,7 +74,8 @@ function AuthScreen() {
   return (
     <div className="auth">
       <form className="auth-card" onSubmit={submit}>
-        <div className="logo">Concord</div>
+        <img className="logo-img" src="./icon-192.png" alt="" />
+        <div className="logo center">Concord</div>
         <p className="muted">{mode === 'login' ? 'Entre para falar com seus amigos.' : 'Crie sua conta em segundos.'}</p>
         <label>
           <span>Usuário</span>
@@ -103,7 +116,7 @@ function Rail({ s, ask }: { s: State; ask: Ask }) {
   return (
     <nav className="rail">
       <button className={`rail-item home${s.view.kind === 'home' ? ' active' : ''}`} title="Amigos e conversas"
-        onClick={() => setView({ kind: 'home' })}>
+        onClick={() => setView({ kind: 'home' }, false)}>
         <Icon name="users" size={22} />
         {(dmUnread || pending > 0) && <span className="badge" />}
       </button>
@@ -208,7 +221,7 @@ function FriendsView({ s, ask }: { s: State; ask: Ask }) {
 
   return (
     <>
-      <header className="topbar"><Icon name="users" /> <h1>Amigos</h1></header>
+      <header className="topbar"><Back /><Icon name="users" /> <h1>Amigos</h1></header>
       <div className="page">
         <form className="add-friend" onSubmit={add}>
           <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Nome de usuário do seu amigo" maxLength={20} />
@@ -419,7 +432,7 @@ function Chat({ s, channelId, title, icon, placeholder }: { s: State; channelId:
 
   return (
     <>
-      <header className="topbar"><Icon name={icon} /> <h1>{title}</h1></header>
+      <header className="topbar"><Back /><Icon name={icon} /> <h1>{title}</h1></header>
       <div className="messages" ref={listRef}
         onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>
         {messages && !s.historyEnd[channelId] && (
@@ -478,15 +491,13 @@ function VoicePanel({ s }: { s: State }) {
   );
 }
 
-function UserPanel({ s, ask }: { s: State; ask: Ask }) {
+function UserPanel({ s, openSettings }: { s: State; openSettings: () => void }) {
   const me = s.me!;
   const v = s.myVoice;
+  const hasUpdate = s.update.state === 'available' || s.update.state === 'ready';
   return (
     <div className="user-panel">
-      <button className="me" title="Editar meu nome" onClick={() => ask({
-        title: 'Meu nome', fields: [{ name: 'displayName', label: 'Nome que os amigos veem', initial: me.displayName, maxLength: 32 }],
-        confirm: 'Salvar', onSubmit: (x) => request('profile.update', { displayName: x.displayName }),
-      })}>
+      <button className="me" title="Configurações" onClick={openSettings}>
         <Avatar name={me.displayName} id={me.id} size={32} online />
         <span className="grow"><b className="ellipsis">{me.displayName}</b><small>@{me.username}</small></span>
       </button>
@@ -498,9 +509,9 @@ function UserPanel({ s, ask }: { s: State; ask: Ask }) {
             onClick={() => void setVoiceFlags({ deafened: !v.deafened })} />
         </>
       )}
-      <IconButton icon="logout" title="Sair da conta" onClick={() => ask({
-        title: 'Sair da conta?', confirm: 'Sair', danger: true, onSubmit: () => logout(),
-      })} />
+      <IconButton icon="gear" title={hasUpdate ? 'Configurações (atualização disponível)' : 'Configurações'} onClick={openSettings}>
+        {hasUpdate && <span className="badge" />}
+      </IconButton>
     </div>
   );
 }

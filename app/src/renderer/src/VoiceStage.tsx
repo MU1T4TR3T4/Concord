@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { leaveVoice, setVoiceFlags, setVolume, setWatching, type Channel, type Group, type State } from './store';
 import { captureSources, screenStreamOf, startShare, stopShare, type Quality } from './voice';
-import { Avatar, Icon, IconButton } from './ui';
+import { Avatar, Back, Icon, IconButton } from './ui';
 
 const isScreen = (t: string) => t.startsWith('screen');
 
@@ -14,10 +14,12 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
   const nameOf = (id: string) => group.members.find((m) => m.id === id)?.displayName ?? 'Alguém';
   const streamers = parts.filter((p) => p.tracks.some(isScreen));
   const v = s.myVoice;
+  // Celulares não deixam o navegador capturar a tela; lá o botão some.
+  const canShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 
   return (
     <>
-      <header className="topbar"><Icon name="speaker" /> <h1>{channel.name}</h1></header>
+      <header className="topbar"><Back /><Icon name="speaker" /> <h1>{channel.name}</h1></header>
       <div className="stage">
         {!inRoom && <div className="empty-hint center">Você não está nesta sala. Clique nela na lista ao lado para entrar.</div>}
         {inRoom && !s.sfu && <div className="error">O áudio ainda não foi ativado no servidor.</div>}
@@ -60,7 +62,7 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
             onClick={() => void setVoiceFlags({ deafened: !v.deafened })}>
             <Icon name={v.deafened ? 'earOff' : 'ear'} size={22} />
           </button>
-          {s.sharing ? (
+          {!canShare ? null : s.sharing ? (
             <button className="ctl wide live-on" onClick={() => void stopShare()}><Icon name="screen" size={22} /> Parar transmissão</button>
           ) : (
             <button className="ctl wide" disabled={!s.sfu} onClick={() => { setError(''); setPicker(true); }}>

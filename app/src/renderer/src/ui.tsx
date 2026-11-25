@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { patch } from './store';
 
 const PATHS: Record<string, string> = {
   mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3',
@@ -20,6 +21,8 @@ const PATHS: Record<string, string> = {
   edit: 'M4 20h4L19 9l-4-4L4 16zM13 7l4 4',
   screen: 'M3 5h18v11H3zM8 20h8M12 16v4',
   expand: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
+  back: 'M15 5l-7 7 7 7',
+  gear: 'M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4',
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -112,6 +115,15 @@ export function FormModal({ spec, onClose }: { spec: FormSpec; onClose: () => vo
         </div>
       </form>
     </div>
+  );
+}
+
+/** Só aparece em telas estreitas: volta do conteúdo para a navegação. */
+export function Back() {
+  return (
+    <button type="button" className="icon-btn back" title="Voltar" aria-label="Voltar" onClick={() => patch({ mobileMain: false })}>
+      <Icon name="back" />
+    </button>
   );
 }
 

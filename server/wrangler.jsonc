@@ -2,6 +2,8 @@
   "name": "concord-server",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
+  // Versão web (celular): gerada por `npm run build:web` dentro de app/.
+  "assets": { "directory": "./public" },
   "durable_objects": {
     "bindings": [{ "name": "HUB", "class_name": "Hub" }]
   },

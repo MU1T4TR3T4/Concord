@@ -1,7 +1,7 @@
 {
   "name": "concord",
   "productName": "Concord",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Voz, salas e transmissão de tela entre amigos",
   "author": "Concord",
   "private": true,
@@ -10,21 +10,26 @@
     "dev": "electron-vite dev",
     "web": "vite --config vite.web.config.ts",
     "build": "electron-vite build",
+    "build:web": "vite build --config vite.web.config.ts --mode web",
     "typecheck": "tsc --noEmit",
-    "dist": "electron-vite build && electron-builder --win"
+    "icons": "electron scripts/make-icon.cjs",
+    "dist": "electron-vite build && electron-builder --win --publish never",
+    "release": "electron-vite build && electron-builder --win --publish always"
   },
   "dependencies": {
-    "@types/node": "^26.6.10",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "electron-updater": "^6.8.11",
+    "uiohook-napi": "^1.5.5"
   },
   "devDependencies": {
+    "@types/node": "^26.6.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.3.0",
     "electron": "^45.5.0",
     "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
   },
@@ -32,18 +37,29 @@
     "appId": "app.concord.desktop",
     "productName": "Concord",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "out/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "artifactName": "Concord-Setup-${version}.exe"
-    }
+      "artifactName": "Concord-Setup-${version}.exe",
+      "shortcutName": "Concord"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MU1T4TR3T4",
+        "repo": "Concord",
+        "releaseType": "release"
+      }
+    ]
   }
 }
