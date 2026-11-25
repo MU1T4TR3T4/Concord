@@ -1,20 +1,12 @@
 import { useEffect, useState } from 'react';
 import { patch, request, setView, type State, type User } from './store';
 import { Avatar, Icon } from './ui';
+import { BADGE_GROUPS, badgesOf, findUser } from './Badges';
 
 export const openProfile = (userId: string) => patch({ profileUserId: userId });
 const close = () => patch({ profileUserId: null });
 
-function findUser(s: State, id: string): User | undefined {
-  if (s.me?.id === id) return s.me;
-  for (const g of s.groups) {
-    const m = g.members.find((u) => u.id === id);
-    if (m) return m;
-  }
-  return s.friends.find((f) => f.user.id === id)?.user;
-}
-
-/** Cartão que abre ao clicar em uma pessoa: foto, nome, status e atalhos de amizade e conversa. */
+/** Cartão que abre ao clicar em uma pessoa: foto, nome, status, selos e atalhos de amizade e conversa. */
 export function ProfileModal({ s, userId }: { s: State; userId: string }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,6 +30,7 @@ export function ProfileModal({ s, userId }: { s: State; userId: string }) {
       if ((s.voice[c.id] ?? []).some((p) => p.userId === user.id)) room = `${c.name} · ${g.name}`;
     }
   }
+  const badges = badgesOf(user);
 
   const run = async (op: string, d: Record<string, unknown>) => {
     setBusy(true);
@@ -61,6 +54,17 @@ export function ProfileModal({ s, userId }: { s: State; userId: string }) {
         </div>
         {room && <div className="profile-status"><Icon name="speaker" size={15} /> Em chamada: {room}</div>}
         {friend?.status === 'accepted' && <div className="profile-status"><Icon name="users" size={15} /> Vocês são amigos</div>}
+
+        {badges.length > 0 && (
+          <div className="profile-badges">
+            {badges.map((b) => (
+              <div className="profile-badge" key={b.id}>
+                <span className="emoji">{b.emoji}</span>
+                <div><b>{b.name}</b><small>{b.text}</small></div>
+              </div>
+            ))}
+          </div>
+        )}
         {error && <div className="error">{error}</div>}
 
         {mine && <div className="muted">Este é você.</div>}
@@ -88,8 +92,57 @@ export function ProfileModal({ s, userId }: { s: State; userId: string }) {
             Enviar mensagem
           </button>
         )}
+
+        {s.me!.admin && <AdminTools s={s} user={user} inCall={Boolean(room)} busy={busy} run={run} />}
         <button className="btn ghost" onClick={close}>Fechar</button>
       </div>
+    </div>
+  );
+}
+
+/** Só o admin geral vê: dar e tirar selos, tirar da chamada e remover do grupo aberto. */
+function AdminTools({ s, user, inCall, busy, run }: {
+  s: State; user: User; inCall: boolean; busy: boolean; run: (op: string, d: Record<string, unknown>) => Promise<void>;
+}) {
+  const [confirmKick, setConfirmKick] = useState(false);
+  const has = new Set(user.badges ?? []);
+  const toggle = (id: string) => {
+    const next = has.has(id) ? [...has].filter((x) => x !== id) : [...has, id];
+    void run('admin.badges', { userId: user.id, badges: next });
+  };
+  const group = s.view.kind === 'group' ? s.groups.find((g) => g.id === (s.view as { groupId: string }).groupId) : undefined;
+  const canKick = group && user.id !== s.me!.id && user.id !== group.ownerId && group.members.some((m) => m.id === user.id);
+
+  return (
+    <div className="admin-box">
+      <div className="admin-title">🛡️ Admin</div>
+      {BADGE_GROUPS.map((g) => (
+        <div key={g.title}>
+          <div className="admin-sub">{g.title}</div>
+          <div className="badge-picker">
+            {g.badges.map((b) => (
+              <button key={b.id} type="button" disabled={busy} title={b.text}
+                className={`badge-chip${has.has(b.id) ? ' on' : ''}`} onClick={() => toggle(b.id)}>
+                <span>{b.emoji}</span> {b.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+      {(inCall || canKick) && <div className="admin-sub">Ações</div>}
+      {inCall && user.id !== s.me!.id && (
+        <button className="btn danger wide" disabled={busy} onClick={() => void run('admin.voice.kick', { userId: user.id })}>
+          Tirar da chamada
+        </button>
+      )}
+      {canKick && (
+        <button className="btn danger wide" disabled={busy} onClick={() => {
+          if (!confirmKick) return setConfirmKick(true);
+          void run('admin.group.kick', { groupId: group.id, userId: user.id });
+        }}>
+          {confirmKick ? `Confirmar: remover de "${group.name}"` : `Remover do grupo "${group.name}"`}
+        </button>
+      )}
     </div>
   );
 }

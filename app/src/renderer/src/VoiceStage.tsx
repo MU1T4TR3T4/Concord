@@ -4,6 +4,7 @@ import { canShareScreen, captureSources, screenStreamOf, startShare, stopShare, 
 import { Avatar, Back, Icon, IconButton } from './ui';
 import { SoundBoard, SoundUpload, voiceGroup } from './Sounds';
 import { openProfile } from './Profile';
+import { Badges } from './Badges';
 
 const isScreen = (t: string) => t.startsWith('screen');
 
@@ -78,6 +79,7 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
                   {p.deafened ? <Icon name="earOff" size={15} /> : p.muted ? <Icon name="micOff" size={15} /> : null}
                 </div>
               </button>
+              <Badges user={group.members.find((m) => m.id === p.userId)} max={6} />
               {inRoom && p.userId !== me.id && (
                 <input type="range" min={0} max={100} title="Volume desta pessoa" className="volume"
                   value={Math.round((s.volumes[p.userId] ?? 1) * 100)}

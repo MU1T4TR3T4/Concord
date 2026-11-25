@@ -368,3 +368,31 @@ a.link { text-decoration: none; }
 .voice-panel { position: relative; }
 .voice-panel .voice-actions { position: static; }
 .voice-panel .soundboard { left: 8px; bottom: calc(100% + 8px); }
+
+/* ---------- selos e admin ---------- */
+.seals { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.seal { font-size: 14px; line-height: 1; cursor: default; }
+.seal.more { font-size: 11px; color: var(--muted); font-weight: 700; margin-left: 2px; }
+.tile .seal { font-size: 17px; }
+.seal-tip {
+  position: fixed; transform: translate(-50%, calc(-100% - 8px)); z-index: 80; pointer-events: none;
+  display: flex; flex-direction: column; gap: 2px; width: max-content; max-width: 230px; padding: 8px 10px;
+  background: #07050c; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+  color: var(--text); font-size: 12.5px; font-weight: 400; text-align: left; white-space: normal;
+}
+.seal-tip span { color: var(--muted); }
+.modal.profile { max-height: 92vh; overflow-y: auto; }
+.profile-badges { display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; }
+.profile-badge { display: flex; align-items: center; gap: 10px; padding: 7px 10px; background: var(--bg-3); border-radius: 9px; }
+.profile-badge .emoji { font-size: 22px; }
+.profile-badge b { display: block; font-size: 13.5px; }
+.profile-badge small { color: var(--muted); font-size: 12px; }
+.admin-box { width: 100%; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px dashed var(--accent-soft); border-radius: 11px; text-align: left; }
+.admin-title { font-weight: 700; color: var(--accent-soft); }
+.admin-sub { font-size: 11px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); margin: 4px 0 5px; }
+.badge-picker { display: flex; flex-wrap: wrap; gap: 5px; }
+.badge-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 999px; background: var(--bg-3); color: var(--muted); font-size: 12.5px; border: 1px solid transparent; }
+.badge-chip:hover:not(:disabled) { color: var(--text); background: var(--bg-4); }
+.badge-chip.on { background: color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent-soft); color: var(--text); }
+.modal.profile:has(.admin-box) { width: min(440px, 94vw); }
+.banner.notice { cursor: pointer; width: 100%; border: 0; font: inherit; }

@@ -28,6 +28,8 @@ interface UserRow {
   display_name: string;
   /** Versão da foto de perfil (data do envio) ou null se não tem foto. */
   avatar: number | null;
+  /** Selos dados pelo admin: lista de ids em JSON. */
+  badges: string | null;
 }
 
 const MAX_AVATAR_BYTES = 200 * 1024;
@@ -40,6 +42,8 @@ type Row = Record<string, SqlStorageValue>;
 
 const SFU_BASE = 'https://rtc.live.cloudflare.com/v1/apps';
 const USERNAME_RE = /^[a-z0-9_.]{3,20}$/;
+const BADGE_RE = /^[a-z0-9-]{1,24}$/;
+const MAX_BADGES = 12;
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -105,6 +109,12 @@ export class Hub extends DurableObject<Env> {
     } catch {
       /* a coluna já existe */
     }
+    // Selos que o admin dá às pessoas: lista de ids em JSON.
+    try {
+      this.sql.exec('ALTER TABLE users ADD COLUMN badges TEXT');
+    } catch {
+      /* a coluna já existe */
+    }
   }
 
   // ---------------------------------------------------------------- HTTP
@@ -119,6 +129,13 @@ export class Hub extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
+    // Lista de contas, só para o dono do servidor (segredo ADMIN_KEY). Ver scripts/list-users.mjs.
+    if (req.method === 'GET' && url.pathname === '/api/admin/users') {
+      const key = this.env.ADMIN_KEY?.trim();
+      const given = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+      if (!key || !given || !safeEqual(given, key)) return Response.json({ error: 'Não autorizado' }, { status: 401 });
+      return Response.json(this.all('SELECT username, display_name AS displayName, created_at AS createdAt FROM users ORDER BY created_at'));
+    }
     // Prévia pública de um convite: quem recebe o link vê o nome do grupo antes de entrar.
     if (req.method === 'GET' && url.pathname.startsWith('/api/invite/')) {
       const code = decodeURIComponent(url.pathname.slice('/api/invite/'.length)).trim().toUpperCase();
@@ -453,14 +470,7 @@ export class Hub extends DurableObject<Env> {
         const g = this.one('SELECT id FROM groups WHERE invite_code = ?', code);
         if (!g) throw new Fail('Convite inválido');
         const gid = String(g.id);
-        this.sql.exec('INSERT OR IGNORE INTO group_members (group_id, user_id, joined_at) VALUES (?,?,?)',
-          gid, uid, Date.now());
-        this.broadcastGroup(gid);
-        this.sendTo([uid], 'voice.snapshot', this.voiceFor([gid]));
-        for (const r of this.all(SOUND_COLS + " WHERE scope = 'group' AND group_id = ?", gid)) {
-          this.sendTo([uid], 'sound.added', this.soundObj(r));
-        }
-        if (this.isOnline(uid)) this.sendTo(this.memberIds(gid), 'presence', { userId: uid, online: true });
+        this.addMember(gid, uid);
         return { groupId: gid };
       }
       case 'group.rename': {
@@ -550,6 +560,52 @@ export class Hub extends DurableObject<Env> {
           id: r.id, channelId: r.channel_id, userId: r.user_id, content: r.content,
           createdAt: r.created_at, author: r.display_name ?? 'Usuário removido',
         }));
+      }
+
+      // ---- admin geral (conta definida em ADMIN_USER)
+      case 'admin.badges': {
+        this.requireAdmin(uid);
+        const target = this.user(String(d.userId ?? ''));
+        if (!target) throw new Fail('Usuário não encontrado');
+        const list = Array.isArray(d.badges) ? d.badges : [];
+        const badges = [...new Set(list.filter((b): b is string => typeof b === 'string' && BADGE_RE.test(b)))].slice(0, MAX_BADGES);
+        this.sql.exec('UPDATE users SET badges = ? WHERE id = ?', JSON.stringify(badges), target.id);
+        this.sendTo([...this.audienceOf(target.id), target.id, uid], 'user.update', this.user(target.id));
+        return null;
+      }
+      case 'admin.voice.kick': {
+        this.requireAdmin(uid);
+        const target = String(d.userId ?? '');
+        for (const s of this.sockets()) {
+          if (s.att.uid !== target || !s.att.vc) continue;
+          const vc = s.att.vc;
+          this.setAtt(s.ws, { ...s.att, vc: null, sid: null, tr: [], ss: null });
+          this.broadcastVoice(vc);
+          this.sendTo([target], 'voice.kicked', { channelId: vc });
+        }
+        return null;
+      }
+      case 'admin.group.kick': {
+        this.requireAdmin(uid);
+        const gid = String(d.groupId ?? '');
+        const target = String(d.userId ?? '');
+        const g = this.one('SELECT owner_id FROM groups WHERE id = ?', gid);
+        if (!g) throw new Fail('Grupo não encontrado');
+        if (g.owner_id === target) throw new Fail('O dono do grupo não pode ser removido');
+        this.kickFromVoice(target, gid);
+        this.sql.exec('DELETE FROM group_members WHERE group_id = ? AND user_id = ?', gid, target);
+        this.sendTo([target], 'group.removed', { groupId: gid, kicked: true });
+        this.broadcastGroup(gid);
+        return null;
+      }
+      case 'admin.group.add': {
+        this.requireAdmin(uid);
+        const gid = String(d.groupId ?? '');
+        if (!this.one('SELECT id FROM groups WHERE id = ?', gid)) throw new Fail('Grupo não encontrado');
+        const other = this.one('SELECT id FROM users WHERE username = ?', String(d.username ?? '').trim().toLowerCase());
+        if (!other) throw new Fail('Usuário não encontrado');
+        this.addMember(gid, String(other.id));
+        return null;
       }
 
       // ---- voz
@@ -685,8 +741,45 @@ export class Hub extends DurableObject<Env> {
   }
 
   private user(id: string) {
-    const r = this.one('SELECT id, username, display_name, avatar FROM users WHERE id = ?', id) as UserRow | null;
-    return r ? { id: r.id, username: r.username, displayName: r.display_name, avatar: r.avatar ?? null } : null;
+    const r = this.one('SELECT id, username, display_name, avatar, badges FROM users WHERE id = ?', id) as UserRow | null;
+    return r ? this.userObj(r) : null;
+  }
+
+  private userObj(r: UserRow) {
+    let badges: string[] = [];
+    try {
+      badges = r.badges ? (JSON.parse(r.badges) as string[]) : [];
+    } catch {
+      /* valor antigo ou inválido: fica sem selos */
+    }
+    return {
+      id: r.id, username: r.username, displayName: r.display_name, avatar: r.avatar ?? null, badges,
+      admin: r.username === this.adminUser(),
+    };
+  }
+
+  private adminUser(): string {
+    return (this.env.ADMIN_USER ?? '').trim().toLowerCase();
+  }
+
+  private requireAdmin(uid: string): void {
+    const admin = this.adminUser();
+    const me = this.one('SELECT username FROM users WHERE id = ?', uid);
+    if (!admin || me?.username !== admin) throw new Fail('Só o admin pode fazer isso');
+  }
+
+  /** Coloca a pessoa no grupo e manda para ela tudo o que um membro precisa ver. */
+  private addMember(gid: string, uid: string): void {
+    this.sql.exec('INSERT OR IGNORE INTO group_members (group_id, user_id, joined_at) VALUES (?,?,?)', gid, uid, Date.now());
+    this.broadcastGroup(gid);
+    this.sendTo([uid], 'voice.snapshot', this.voiceFor([gid]));
+    for (const r of this.all(SOUND_COLS + " WHERE scope = 'group' AND group_id = ?", gid)) {
+      this.sendTo([uid], 'sound.added', this.soundObj(r));
+    }
+    const members = this.memberIds(gid);
+    if (this.isOnline(uid)) this.sendTo(members, 'presence', { userId: uid, online: true });
+    // Quem entrou também precisa saber quem já está online.
+    for (const m of members) if (m !== uid && this.isOnline(m)) this.sendTo([uid], 'presence', { userId: m, online: true });
   }
 
   private sockets(except?: WebSocket): { ws: WebSocket; att: Att }[] {
@@ -793,10 +886,10 @@ export class Hub extends DurableObject<Env> {
       inviteCode: g.invite_code,
       channels: this.all('SELECT id, name, type FROM channels WHERE group_id = ? ORDER BY position', gid),
       members: this.all(
-        `SELECT u.id, u.username, u.display_name, u.avatar FROM group_members m JOIN users u ON u.id = m.user_id
+        `SELECT u.id, u.username, u.display_name, u.avatar, u.badges FROM group_members m JOIN users u ON u.id = m.user_id
          WHERE m.group_id = ? ORDER BY u.display_name COLLATE NOCASE`,
         gid,
-      ).map((u) => ({ id: u.id, username: u.username, displayName: u.display_name, avatar: u.avatar ?? null })),
+      ).map((u) => this.userObj(u as unknown as UserRow)),
     };
   }
 

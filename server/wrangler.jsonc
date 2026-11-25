@@ -4,6 +4,8 @@
   "compatibility_date": "2025-09-01",
   // Versão web (celular): gerada por `npm run build:web` dentro de app/.
   "assets": { "directory": "./public" },
+  // Conta do admin geral: dá selos às pessoas, remove e adiciona gente nos grupos.
+  "vars": { "ADMIN_USER": "ads" },
   "durable_objects": {
     "bindings": [{ "name": "HUB", "class_name": "Hub" }]
   },

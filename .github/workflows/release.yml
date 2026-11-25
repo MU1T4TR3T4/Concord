@@ -1,0 +1,32 @@
+# Publica o instalador do Windows como Release do GitHub quando uma tag vX.Y.Z é enviada.
+# É dessa Release que o app instalado baixa a atualização automática.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      # A tag tem de bater com a versão do package.json, senão o app não acha a atualização.
+      - name: Conferir versão
+        shell: bash
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

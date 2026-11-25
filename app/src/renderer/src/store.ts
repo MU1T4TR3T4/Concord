@@ -11,6 +11,10 @@ export interface User {
   displayName: string;
   /** Versão da foto de perfil; null ou ausente = sem foto. */
   avatar?: number | null;
+  /** Selos dados pelo admin (ids do catálogo em Badges.tsx). */
+  badges?: string[];
+  /** É o admin geral do servidor? */
+  admin?: boolean;
 }
 
 export interface Sound {
@@ -155,6 +159,8 @@ export interface State {
   sounds: Sound[];
   /** Pessoa cujo cartão de perfil está aberto. */
   profileUserId: string | null;
+  /** Aviso passageiro no topo (ex.: "você foi removido do grupo"). */
+  notice: string | null;
 }
 
 /** Aceita "ABCD2345", "?convite=ABCD2345" ou "concord://convite/ABCD2345". */
@@ -238,6 +244,7 @@ const initial: State = {
   pendingInvite: inviteFromUrl(),
   sounds: [],
   profileUserId: null,
+  notice: null,
 };
 
 let state = initial;
@@ -444,8 +451,12 @@ function handleEvent(ev: string, d: any): void {
       set({ groups: exists ? state.groups.map((x) => (x.id === g.id ? g : x)) : [...state.groups, g], view, myVoice });
       break;
     }
+    case 'voice.kicked':
+      if (state.myVoice?.channelId === d.channelId) set({ myVoice: null, notice: 'O admin tirou você da chamada.' });
+      break;
     case 'group.removed': {
       const gone = state.groups.find((g) => g.id === d.groupId);
+      if (d.kicked && gone) set({ notice: `O admin removeu você do grupo "${gone.name}".` });
       const view = state.view.kind === 'group' && state.view.groupId === d.groupId ? ({ kind: 'home' } as View) : state.view;
       const myVoice = state.myVoice && gone?.channels.some((c) => c.id === state.myVoice!.channelId) ? null : state.myVoice;
       set({
