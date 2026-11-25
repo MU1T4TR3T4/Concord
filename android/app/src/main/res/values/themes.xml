@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="concord_bg">#120E1D</color>
+    <color name="concord_accent">#7A3CFF</color>
+
+    <style name="Theme.Concord" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/concord_bg</item>
+        <item name="android:statusBarColor">@color/concord_bg</item>
+        <item name="android:navigationBarColor">@color/concord_bg</item>
+        <item name="android:colorAccent">@color/concord_accent</item>
+    </style>
+</resources>

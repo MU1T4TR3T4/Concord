@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { logout, patch, request, updateSettings, type State } from './store';
+import { avatarUrl, logout, patch, request, updateSettings, uploadAvatar, type State } from './store';
 import { onMicLevel, startMicPreview, stopMicPreview } from './voice';
-import { Icon } from './ui';
+import { Avatar, Icon } from './ui';
+import { SoundsTab } from './Sounds';
 
 // O medidor trabalha em decibéis: -60 dB (silêncio) a 0 dB (máximo).
 const toDb = (rms: number) => (rms > 0 ? Math.max(-60, 20 * Math.log10(rms)) : -60);
 const fromDb = (db: number) => 10 ** (db / 20);
 const pct = (db: number) => ((db + 60) / 60) * 100;
 
-type Tab = 'voz' | 'atualizacao' | 'conta';
+type Tab = 'voz' | 'sons' | 'atualizacao' | 'conta';
 
 export function SettingsModal({ s, onClose }: { s: State; onClose: () => void }) {
   const desktop = Boolean(window.concord?.update);
@@ -29,6 +30,7 @@ export function SettingsModal({ s, onClose }: { s: State; onClose: () => void })
         </div>
         <div className="segmented">
           <button className={tab === 'voz' ? 'active' : ''} onClick={() => setTab('voz')}>Voz e áudio</button>
+          <button className={tab === 'sons' ? 'active' : ''} onClick={() => setTab('sons')}>Sons</button>
           {desktop && (
             <button className={tab === 'atualizacao' ? 'active' : ''} onClick={() => setTab('atualizacao')}>
               Atualização{s.update.state === 'available' || s.update.state === 'ready' ? ' •' : ''}
@@ -38,6 +40,7 @@ export function SettingsModal({ s, onClose }: { s: State; onClose: () => void })
         </div>
         <div className="settings-body">
           {tab === 'voz' && <VoiceTab s={s} />}
+          {tab === 'sons' && <SoundsTab s={s} />}
           {tab === 'atualizacao' && <UpdateTab s={s} />}
           {tab === 'conta' && <AccountTab s={s} onClose={onClose} />}
         </div>
@@ -226,6 +229,19 @@ function AccountTab({ s, onClose }: { s: State; onClose: () => void }) {
   const me = s.me!;
   const [name, setName] = useState(me.displayName);
   const [note, setNote] = useState('');
+  const [photoNote, setPhotoNote] = useState('');
+  const file = useRef<HTMLInputElement>(null);
+
+  async function pickPhoto(f: File | undefined) {
+    if (!f) return;
+    setPhotoNote('Enviando…');
+    try {
+      await uploadAvatar(await squarePhoto(f));
+      setPhotoNote('');
+    } catch (e) {
+      setPhotoNote((e as Error).message);
+    }
+  }
   async function save() {
     try {
       await request('profile.update', { displayName: name });
@@ -236,6 +252,21 @@ function AccountTab({ s, onClose }: { s: State; onClose: () => void }) {
   }
   return (
     <>
+      <div className="field">
+        <span className="field-label">Foto de perfil</span>
+        <div className="avatar-edit">
+          <Avatar name={me.displayName} id={me.id} size={84} />
+          <div className="btns">
+            <input ref={file} type="file" accept="image/*" hidden
+              onChange={(e) => { void pickPhoto(e.target.files?.[0]); e.target.value = ''; }} />
+            <button className="btn primary" onClick={() => file.current?.click()}>{avatarUrl(me.id, s) ? 'Trocar foto' : 'Escolher foto'}</button>
+            {avatarUrl(me.id, s) && (
+              <button className="btn ghost" onClick={() => void request('profile.avatar.remove').catch((e) => setPhotoNote((e as Error).message))}>Remover</button>
+            )}
+          </div>
+        </div>
+        {photoNote && <span className="muted small">{photoNote}</span>}
+      </div>
       <label>
         <span>Nome que os amigos veem</span>
         <input value={name} maxLength={32} onChange={(e) => setName(e.target.value)} />
@@ -253,4 +284,27 @@ function AccountTab({ s, onClose }: { s: State; onClose: () => void }) {
       </div>
     </>
   );
+}
+
+/** Recorta o centro da imagem em um quadrado de 256 px e devolve um JPEG pequeno. */
+async function squarePhoto(file: File): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Não consegui abrir essa imagem'));
+      el.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 256;
+    const g = canvas.getContext('2d')!;
+    g.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 256, 256);
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.88));
+    if (!blob) throw new Error('Não consegui preparar a foto');
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }

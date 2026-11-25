@@ -10,7 +10,7 @@ import {
 } from './store';
 import { Avatar, Back, FormModal, Icon, IconButton, type FormSpec } from './ui';
 import { SettingsModal } from './Settings';
-import { VoiceStage } from './VoiceStage';
+import { VoiceActions, VoiceStage } from './VoiceStage';
 
 export function App() {
   const s = useStore();
@@ -48,6 +48,11 @@ export function App() {
       <Rail s={s} ask={setForm} />
       <aside className="sidebar">
         {group ? <GroupSidebar s={s} group={group} ask={setForm} /> : <HomeSidebar s={s} />}
+        {/Android/i.test(navigator.userAgent) && !window.ConcordNative && (
+          <a className="apk-banner" href="./concord.apk" download>
+            <Icon name="screen" /> <span className="grow">Baixe o app Android para transmitir a tela</span>
+          </a>
+        )}
         <VoicePanel s={s} />
         <UserPanel s={s} openSettings={() => setSettings(true)} />
       </aside>
@@ -584,13 +589,17 @@ function VoicePanel({ s }: { s: State }) {
   }
   return (
     <div className="voice-panel">
-      <div className="grow">
-        <div className="voice-status">Na sala de voz</div>
-        <div className="muted ellipsis">{label}</div>
-        {!s.sfu && <div className="warn">O áudio ainda não foi ativado no servidor.</div>}
-        {s.sharing && <div className="warn">Você está transmitindo a tela.</div>}
+      <div className="voice-head">
+        <div className="grow">
+          <div className="voice-status">Voz conectada</div>
+          <div className="muted ellipsis">{label}</div>
+          {!s.sfu && <div className="warn">O áudio ainda não foi ativado no servidor.</div>}
+          {s.sharing && <div className="warn">Você está transmitindo a tela.</div>}
+        </div>
+        <IconButton icon="hangup" title="Sair da sala de voz" danger onClick={() => void leaveVoice()} />
       </div>
-      <IconButton icon="hangup" title="Sair da sala de voz" danger onClick={() => void leaveVoice()} />
+      {/* Transmitir tela e mesa de som ficam aqui, ao lado, e não no meio da sala. */}
+      <VoiceActions s={s} />
     </div>
   );
 }

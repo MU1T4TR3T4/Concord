@@ -37,3 +37,15 @@ Instalador para Windows (sai em `app/release/`, usando a URL de `app/.env.produc
 ```bash
 cd app && npm run dist
 ```
+
+## App Android
+
+Fica em `android/`. É uma janela (WebView) com a versão web, mais captura de tela nativa e
+serviço em segundo plano. Precisa do Java 17 e do Android SDK (plataforma 35).
+
+```bash
+cd android && ./build-apk.sh
+```
+
+O APK sai em `android/app/build/outputs/apk/release/` e é publicado junto com o servidor
+(`cd server && npm run deploy`), em `https://<servidor>/concord.apk`.

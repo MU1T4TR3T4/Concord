@@ -1,6 +1,6 @@
 // Motor de voz e transmissão de tela: uma conexão WebRTC com o SFU da Cloudflare por sala.
 // O servidor do Concord repassa as chamadas ao SFU (o segredo nunca chega ao aplicativo).
-import { getState, patch, request, voiceHooks, type PttKey, type Settings, type UpdateStatus } from './store';
+import { getState, patch, request, soundUrl, voiceHooks, type PttKey, type Settings, type UpdateStatus } from './store';
 
 export type Quality = '720p30' | '1080p30' | '1080p60';
 
@@ -18,6 +18,20 @@ interface CaptureSource {
 
 declare global {
   interface Window {
+    /** Ponte exposta pelo app Android (WebView). Não existe no navegador nem no computador. */
+    ConcordNative?: {
+      startShare(width: number, height: number, fps: number, bitrate: number): void;
+      setAnswer(sdp: string): void;
+      stopShare(): void;
+      setInCall(inCall: boolean): void;
+    };
+    /** Chamadas que o app Android faz de volta para a página. */
+    __concordNative?: {
+      onOffer(sdp: string, mid: string): void;
+      onShareError(message: string): void;
+      onShareStopped(): void;
+      back(): boolean;
+    };
     concord?: {
       desktop: boolean;
       capture: {
@@ -61,6 +75,9 @@ let channelId: string | null = null;
 let mySid: string | null = null;
 let share: { stream: MediaStream; mids: string[]; names: string[] } | null = null;
 let shareSeq = 0;
+/** Transmissão feita pelo app Android: o vídeo sai por uma conexão nativa, fora desta página. */
+let nativeShare: { names: string[] } | null = null;
+let nativeWaiting: { resolve: () => void; reject: (e: Error) => void } | null = null;
 let retries = 0;
 let queue: Promise<void> = Promise.resolve();
 
@@ -238,6 +255,7 @@ function start(ch: string, isRetry = false): void {
   retries = isRetry ? tries : 0;
   const g = gen;
   channelId = ch;
+  window.ConcordNative?.setInCall(true);
   queue = setup(g).catch((e) => console.error('[voz] falha ao entrar', e));
 }
 
@@ -297,6 +315,11 @@ function stop(): void {
   releaseInput('voice');
   share?.stream.getTracks().forEach((t) => t.stop());
   share = null;
+  if (nativeShare || nativeWaiting) window.ConcordNative?.stopShare();
+  nativeShare = null;
+  nativeWaiting?.reject(new Error('Você saiu da sala.'));
+  nativeWaiting = null;
+  window.ConcordNative?.setInCall(false);
   remoteSpeaking.clear();
   pc?.close();
   pc = null;
@@ -306,7 +329,7 @@ function stop(): void {
 }
 
 function publish(): Promise<unknown> {
-  const tracks = [...(micTrack() ? ['mic'] : []), ...(share?.names ?? [])];
+  const tracks = [...(micTrack() ? ['mic'] : []), ...(share?.names ?? nativeShare?.names ?? [])];
   return request('voice.state', { tracks });
 }
 
@@ -324,7 +347,9 @@ async function syncNow(g: number): Promise<void> {
     for (const t of p.tracks) {
       // Voz entra sempre; tela (e o áudio dela) só de quem eu escolhi assistir.
       if (t === 'mic' || (isScreen(t) && s.watching[p.userId])) {
-        desired.set(`${p.sessionId}/${t}`, { userId: p.userId, sessionId: p.sessionId, trackName: t });
+        // Quem transmite pelo app Android publica a tela em uma sessão separada da voz.
+        const sid = isScreen(t) ? (p.screenSessionId ?? p.sessionId) : p.sessionId;
+        desired.set(`${sid}/${t}`, { userId: p.userId, sessionId: sid, trackName: t });
       }
     }
   }
@@ -516,8 +541,18 @@ export function captureSources(): Promise<CaptureSource[]> | null {
 
 export async function startShare(opts: { sourceId?: string; audio: boolean; quality: Quality }): Promise<void> {
   if (!pc) throw new Error('A voz ainda está conectando. Tente de novo em instantes.');
-  if (share) return;
+  if (share || nativeShare) return;
   const q = QUALITY[opts.quality];
+
+  // App Android: quem captura e envia o vídeo é o código nativo; aqui só cuidamos da sinalização.
+  if (window.ConcordNative) {
+    if (nativeWaiting) return;
+    await new Promise<void>((resolve, reject) => {
+      nativeWaiting = { resolve, reject };
+      window.ConcordNative!.startShare(q.w, q.h, q.fps, q.bitrate);
+    }).finally(() => (nativeWaiting = null));
+    return;
+  }
 
   let stream: MediaStream;
   if (import.meta.env.DEV && localStorage.getItem('concord.fakeMedia')) {
@@ -582,6 +617,10 @@ export async function startShare(opts: { sourceId?: string; audio: boolean; qual
 }
 
 export function stopShare(): Promise<void> {
+  if (nativeShare) {
+    window.ConcordNative?.stopShare();
+    return endNativeShare();
+  }
   return enqueue(async () => {
     const cur = share;
     if (!cur) return;
@@ -593,6 +632,53 @@ export function stopShare(): Promise<void> {
     await publish();
   });
 }
+
+async function endNativeShare(): Promise<void> {
+  if (!nativeShare) return;
+  nativeShare = null;
+  patch({ sharing: false });
+  bump();
+  await sfu('screen-end').catch(() => undefined);
+  await publish().catch(() => undefined);
+}
+
+export const canShareScreen = (): boolean =>
+  Boolean(window.ConcordNative) || typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+
+window.__concordNative = {
+  // O app Android criou a oferta WebRTC da tela; registramos no SFU e devolvemos a resposta.
+  onOffer: (sdp, mid) => {
+    void (async () => {
+      try {
+        await sfu('screen-session');
+        const name = `screen-${++shareSeq}`;
+        const res = await sfu('screen-tracks', {
+          sessionDescription: { type: 'offer', sdp },
+          tracks: [{ location: 'local', mid, trackName: name }],
+        });
+        window.ConcordNative?.setAnswer(res.sessionDescription.sdp);
+        nativeShare = { names: [name] };
+        patch({ sharing: true });
+        bump();
+        await publish();
+        nativeWaiting?.resolve();
+      } catch (e) {
+        window.ConcordNative?.stopShare();
+        await sfu('screen-end').catch(() => undefined);
+        nativeWaiting?.reject(e as Error);
+      }
+    })();
+  },
+  onShareError: (message) => nativeWaiting?.reject(new Error(message || 'Transmissão cancelada.')),
+  // Parou pelo aviso do Android ou pela notificação.
+  onShareStopped: () => void endNativeShare(),
+  // Botão "voltar" do Android: volta do conteúdo para a navegação; false deixa o app minimizar.
+  back: () => {
+    if (!getState().mobileMain) return false;
+    patch({ mobileMain: false });
+    return true;
+  },
+};
 
 /** Vídeo da tela de um usuário (o meu próprio, se for eu transmitindo). */
 export function screenStreamOf(userId: string): MediaStream | null {
@@ -639,6 +725,17 @@ voiceHooks.start = start;
 voiceHooks.stop = stop;
 voiceHooks.sync = () => void enqueue(syncNow);
 voiceHooks.flags = applyFlags;
+
+// Mesa de som: cada pessoa da sala toca o arquivo no próprio aparelho (não passa pelo microfone).
+voiceHooks.playSound = (soundId: string) => {
+  const s = getState();
+  if (!s.myVoice || s.myVoice.deafened) return;
+  const el = new Audio(soundUrl(soundId)) as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+  el.volume = Math.min(1, Math.max(0, s.settings.soundVolume * s.settings.outputVolume));
+  const sink = s.settings.outputDeviceId === 'default' ? '' : s.settings.outputDeviceId;
+  if (el.setSinkId && sink) void el.setSinkId(sink).catch(() => undefined);
+  void el.play().catch(() => undefined);
+};
 voiceHooks.settings = (changed: (keyof Settings)[]) => {
   const has = (...keys: (keyof Settings)[]) => keys.some((k) => changed.includes(k));
   if (has('inputDeviceId', 'noiseSuppression', 'echoCancellation', 'autoGain')) void replaceRaw();

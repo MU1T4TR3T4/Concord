@@ -9,6 +9,18 @@ export interface User {
   id: string;
   username: string;
   displayName: string;
+  /** Versão da foto de perfil; null ou ausente = sem foto. */
+  avatar?: number | null;
+}
+
+export interface Sound {
+  id: string;
+  scope: 'group' | 'user';
+  groupId: string | null;
+  ownerId: string;
+  name: string;
+  emoji: string;
+  createdAt: number;
 }
 export interface Channel {
   id: string;
@@ -41,6 +53,8 @@ export interface Participant {
   muted: boolean;
   deafened: boolean;
   sessionId: string | null;
+  /** Sessão separada da tela, usada por quem transmite pelo app Android. */
+  screenSessionId?: string | null;
   tracks: string[];
 }
 
@@ -64,6 +78,8 @@ export interface Settings {
   noiseSuppression: boolean;
   echoCancellation: boolean;
   autoGain: boolean;
+  /** Volume dos sons da mesa de som, de 0 a 1. */
+  soundVolume: number;
 }
 
 export interface UpdateStatus {
@@ -85,6 +101,7 @@ const DEFAULT_SETTINGS: Settings = {
   noiseSuppression: true,
   echoCancellation: true,
   autoGain: true,
+  soundVolume: 0.6,
 };
 function loadSettings(): Settings {
   try {
@@ -134,6 +151,8 @@ export interface State {
   mobileMain: boolean;
   /** Código de um link de convite aberto, esperando a pessoa aceitar ou recusar. */
   pendingInvite: string | null;
+  /** Sons dos meus grupos e os meus sons pessoais. */
+  sounds: Sound[];
 }
 
 /** Aceita "ABCD2345", "?convite=ABCD2345" ou "concord://convite/ABCD2345". */
@@ -179,6 +198,7 @@ export const voiceHooks = {
   sync: (): void => undefined,
   flags: (): void => undefined,
   settings: (_changed: (keyof Settings)[]): void => undefined,
+  playSound: (_soundId: string): void => undefined,
 };
 
 const VOLUMES_KEY = 'concord.volumes';
@@ -214,6 +234,7 @@ const initial: State = {
   appVersion: '',
   mobileMain: false,
   pendingInvite: inviteFromUrl(),
+  sounds: [],
 };
 
 let state = initial;
@@ -352,6 +373,7 @@ function applySnapshot(snap: any): void {
     online,
     voice: snap.voice,
     sfu: snap.sfu,
+    sounds: snap.sounds ?? [],
     messages: {},
     historyEnd: {},
     myVoice: null,
@@ -423,7 +445,12 @@ function handleEvent(ev: string, d: any): void {
       const gone = state.groups.find((g) => g.id === d.groupId);
       const view = state.view.kind === 'group' && state.view.groupId === d.groupId ? ({ kind: 'home' } as View) : state.view;
       const myVoice = state.myVoice && gone?.channels.some((c) => c.id === state.myVoice!.channelId) ? null : state.myVoice;
-      set({ groups: state.groups.filter((g) => g.id !== d.groupId), view, myVoice });
+      set({
+        groups: state.groups.filter((g) => g.id !== d.groupId),
+        sounds: state.sounds.filter((x) => x.groupId !== d.groupId),
+        view,
+        myVoice,
+      });
       break;
     }
     case 'msg.new': {
@@ -446,6 +473,18 @@ function handleEvent(ev: string, d: any): void {
       if (state.myVoice?.channelId === d.channelId) voiceHooks.sync();
       break;
     }
+    case 'sound.added': {
+      const sound = d as Sound;
+      set({ sounds: [...state.sounds.filter((x) => x.id !== sound.id), sound] });
+      break;
+    }
+    case 'sound.removed':
+      set({ sounds: state.sounds.filter((x) => x.id !== d.soundId) });
+      break;
+    case 'sound.played':
+      // Só toca para quem está de fato naquela sala de voz.
+      if (state.myVoice?.channelId === d.channelId) voiceHooks.playSound(d.soundId);
+      break;
     case 'voice.snapshot':
       set({ voice: { ...state.voice, ...d } });
       break;
@@ -490,6 +529,51 @@ export async function logout(): Promise<void> {
   const token = localStorage.getItem(TOKEN_KEY);
   await rawRequest('logout', { token }).catch(() => undefined);
   signOutLocal();
+}
+
+// ------------------------------------------------------------------ fotos e sons
+
+export const MAX_SOUND_BYTES = 512 * 1024;
+export const MAX_SOUND_SECONDS = 10;
+
+export function soundUrl(soundId: string): string {
+  return `${SERVER_URL}/api/sound/${soundId}`;
+}
+
+/** Endereço da foto de um usuário, ou null se ele não tem foto (ou não o conhecemos). */
+export function avatarUrl(userId: string, s: State = state): string | null {
+  let version: number | null | undefined = s.me?.id === userId ? s.me.avatar : undefined;
+  if (version === undefined) version = s.friends.find((f) => f.user.id === userId)?.user.avatar;
+  if (version === undefined) {
+    for (const g of s.groups) {
+      const m = g.members.find((u) => u.id === userId);
+      if (m) {
+        version = m.avatar;
+        break;
+      }
+    }
+  }
+  return version ? `${SERVER_URL}/api/avatar/${userId}?v=${version}` : null;
+}
+
+async function upload(path: string, body: Blob, type: string): Promise<any> {
+  const res = await fetch(SERVER_URL + path, {
+    method: 'POST',
+    headers: { 'Content-Type': type, Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) ?? ''}` },
+    body,
+  }).catch(() => null);
+  if (!res) throw new Error('Não foi possível falar com o servidor');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? 'Falha no envio');
+  return data;
+}
+
+export const uploadAvatar = (image: Blob) => upload('/api/avatar', image, image.type);
+
+export function uploadSound(file: Blob, o: { scope: 'group' | 'user'; groupId?: string | null; name: string; emoji: string }): Promise<Sound> {
+  const q = new URLSearchParams({ scope: o.scope, name: o.name, emoji: o.emoji });
+  if (o.scope === 'group' && o.groupId) q.set('groupId', o.groupId);
+  return upload(`/api/sounds?${q}`, file, file.type || 'audio/mpeg');
 }
 
 export function setView(view: View, showMain = true): void {

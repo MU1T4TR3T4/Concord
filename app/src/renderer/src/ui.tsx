@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { patch } from './store';
+import { avatarUrl, patch, useStore } from './store';
 
 const PATHS: Record<string, string> = {
   mic: 'M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM5 11a7 7 0 0 0 14 0M12 18v3',
@@ -22,6 +22,8 @@ const PATHS: Record<string, string> = {
   screen: 'M3 5h18v11H3zM8 20h8M12 16v4',
   expand: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
   back: 'M15 5l-7 7 7 7',
+  sound: 'M4 14v-4a2 2 0 0 1 2-2h2l5-4v16l-5-4H6a2 2 0 0 1-2-2zM17 9l4-2M17 12h4M17 15l4 2',
+  upload: 'M12 16V5M7 10l5-5 5 5M5 19h14',
   link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.700-5.700l-1 1M14 10a4 4 0 0 0-5.700 0l-3 3a4 4 0 0 0 5.700 5.700l1-1',
   gear: 'M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4',
 };
@@ -38,11 +40,12 @@ export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; s
 const AVATAR_COLORS = ['#ffb39a', '#3ecf8e', '#5aa9ff', '#b094ff', '#ffb84d', '#ff6b9a', '#4dd4d4'];
 
 export function Avatar({ name, id, size = 34, online }: { name: string; id: string; size?: number; online?: boolean }) {
+  const photo = avatarUrl(id, useStore());
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return (
     <span className="avatar" style={{ width: size, height: size, background: AVATAR_COLORS[h % AVATAR_COLORS.length], fontSize: size * 0.42 }}>
-      {name.trim().charAt(0).toUpperCase() || '?'}
+      {photo ? <img src={photo} alt="" draggable={false} /> : name.trim().charAt(0).toUpperCase() || '?'}
       {online !== undefined && <span className={`dot ${online ? 'on' : 'off'}`} />}
     </span>
   );

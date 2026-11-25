@@ -43,6 +43,12 @@ app.whenReady().then(async () => {
   out(rounded, 192, join(pub, 'icon-192.png'));
   out(full, 512, join(pub, 'icon-maskable-512.png'));
   out(full, 180, join(pub, 'apple-touch-icon.png'));
+  // App Android: um tamanho por densidade de tela.
+  const android = join(root, '../android/app/src/main/res');
+  for (const [density, size] of [['mdpi', 48], ['hdpi', 72], ['xhdpi', 96], ['xxhdpi', 144], ['xxxhdpi', 192]]) {
+    mkdirSync(join(android, `mipmap-${density}`), { recursive: true });
+    out(rounded, size, join(android, `mipmap-${density}/ic_launcher.png`));
+  }
   console.log('icones gerados; base', rounded.getSize());
   app.quit();
 });

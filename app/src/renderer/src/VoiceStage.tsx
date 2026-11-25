@@ -1,21 +1,55 @@
 import { useEffect, useRef, useState } from 'react';
 import { leaveVoice, setVoiceFlags, setVolume, setWatching, type Channel, type Group, type State } from './store';
-import { captureSources, screenStreamOf, startShare, stopShare, type Quality } from './voice';
+import { canShareScreen, captureSources, screenStreamOf, startShare, stopShare, type Quality } from './voice';
 import { Avatar, Back, Icon, IconButton } from './ui';
+import { SoundBoard, SoundUpload, voiceGroup } from './Sounds';
 
 const isScreen = (t: string) => t.startsWith('screen');
 
-export function VoiceStage({ s, group, channel }: { s: State; group: Group; channel: Channel }) {
+/**
+ * Botões de "Transmitir tela" e "Sons" da sala de voz. Ficam no painel de voz do canto
+ * inferior esquerdo; no celular, na barra de baixo da sala.
+ */
+export function VoiceActions({ s }: { s: State }) {
   const [picker, setPicker] = useState(false);
+  const [board, setBoard] = useState(false);
+  const [upload, setUpload] = useState<'group' | 'user' | null>(null);
   const [error, setError] = useState('');
+  // Navegador de celular não deixa capturar a tela; só o app Android (ou o computador) consegue.
+  const canShare = canShareScreen();
+  const group = voiceGroup(s);
+
+  return (
+    <>
+      {error && <div className="error small">{error}</div>}
+      <div className="voice-actions">
+        {canShare && (s.sharing ? (
+          <button className="act on" title="Parar de transmitir a tela" onClick={() => void stopShare()}>
+            <Icon name="screen" /> <span className="ellipsis">Parar</span>
+          </button>
+        ) : (
+          <button className="act" title="Transmitir a tela" disabled={!s.sfu} onClick={() => { setError(''); setPicker(true); }}>
+            <Icon name="screen" /> <span className="ellipsis">Tela</span>
+          </button>
+        ))}
+        <button className={`act${board ? ' open' : ''}`} title="Mesa de som" onClick={() => setBoard(!board)}>
+          <Icon name="sound" /> <span className="ellipsis">Sons</span>
+        </button>
+        {board && <SoundBoard s={s} onClose={() => setBoard(false)} onUpload={setUpload} />}
+      </div>
+      {picker && <SharePicker onClose={() => setPicker(false)} onError={setError} />}
+      {upload && <SoundUpload s={s} scope={upload} groupId={group?.id ?? null} onClose={() => setUpload(null)} />}
+    </>
+  );
+}
+
+export function VoiceStage({ s, group, channel }: { s: State; group: Group; channel: Channel }) {
   const inRoom = s.myVoice?.channelId === channel.id;
   const parts = s.voice[channel.id] ?? [];
   const me = s.me!;
   const nameOf = (id: string) => group.members.find((m) => m.id === id)?.displayName ?? 'Alguém';
   const streamers = parts.filter((p) => p.tracks.some(isScreen));
   const v = s.myVoice;
-  // Celulares não deixam o navegador capturar a tela; lá o botão some.
-  const canShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 
   return (
     <>
@@ -24,7 +58,6 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
         {!inRoom && <div className="empty-hint center">Você não está nesta sala. Clique nela na lista ao lado para entrar.</div>}
         {inRoom && !s.sfu && <div className="error">O áudio ainda não foi ativado no servidor.</div>}
         {inRoom && s.micError && <div className="error">Não consegui abrir seu microfone. Você ouve os outros, mas eles não ouvem você.</div>}
-        {error && <div className="error">{error}</div>}
 
         {streamers.length > 0 && (
           <div className="streams">
@@ -52,8 +85,9 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
         </div>
       </div>
 
+      {/* No computador estes controles ficam no painel de voz, à esquerda; esta barra é só do celular. */}
       {inRoom && v && (
-        <div className="controls">
+        <div className="controls mobile-only">
           <button className={`ctl${v.muted ? ' off' : ''}`} title={v.muted ? 'Ativar microfone' : 'Mutar microfone'}
             onClick={() => void setVoiceFlags({ muted: !v.muted, deafened: v.muted ? false : v.deafened })}>
             <Icon name={v.muted ? 'micOff' : 'mic'} size={22} />
@@ -62,18 +96,10 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
             onClick={() => void setVoiceFlags({ deafened: !v.deafened })}>
             <Icon name={v.deafened ? 'earOff' : 'ear'} size={22} />
           </button>
-          {!canShare ? null : s.sharing ? (
-            <button className="ctl wide live-on" onClick={() => void stopShare()}><Icon name="screen" size={22} /> Parar transmissão</button>
-          ) : (
-            <button className="ctl wide" disabled={!s.sfu} onClick={() => { setError(''); setPicker(true); }}>
-              <Icon name="screen" size={22} /> Transmitir tela
-            </button>
-          )}
+          <VoiceActions s={s} />
           <button className="ctl hang" title="Sair da sala de voz" onClick={() => void leaveVoice()}><Icon name="hangup" size={22} /></button>
         </div>
       )}
-
-      {picker && <SharePicker onClose={() => setPicker(false)} onError={setError} />}
     </>
   );
 }
@@ -93,7 +119,12 @@ function StreamTile({ s, userId, name, mine, canWatch }: { s: State; userId: str
 
   return (
     <div className="stream">
-      {watching ? (
+      {mine && !stream ? (
+        <div className="stream-cover">
+          <span className="live">AO VIVO</span>
+          <b>Você está transmitindo a tela</b>
+        </div>
+      ) : watching ? (
         <video ref={ref} autoPlay playsInline muted onDoubleClick={(e) => void e.currentTarget.requestFullscreen()} />
       ) : (
         <div className="stream-cover">
@@ -122,6 +153,7 @@ function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: s
   const [audio, setAudio] = useState(true);
   const [busy, setBusy] = useState(false);
   const desktop = Boolean(window.concord?.capture);
+  const android = Boolean(window.ConcordNative);
 
   useEffect(() => {
     const p = captureSources();
@@ -135,7 +167,7 @@ function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: s
   async function go() {
     setBusy(true);
     try {
-      await startShare({ sourceId: selected, audio, quality });
+      await startShare({ sourceId: selected, audio: audio && !android, quality });
       onClose();
     } catch (e) {
       const msg = (e as Error).name === 'NotAllowedError' ? 'Transmissão cancelada.' : (e as Error).message;
@@ -159,7 +191,8 @@ function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: s
             ))}
           </div>
         )}
-        {!desktop && <p className="muted">O sistema vai perguntar qual tela ou janela você quer mostrar.</p>}
+        {!desktop && !android && <p className="muted">O sistema vai perguntar qual tela ou janela você quer mostrar.</p>}
+        {android && <p className="muted">O Android vai pedir permissão para gravar a tela. O som do celular ainda não é enviado, só a imagem.</p>}
         <div className="segmented">
           {(['720p30', '1080p30', '1080p60'] as Quality[]).map((q) => (
             <button key={q} className={quality === q ? 'active' : ''} onClick={() => setQuality(q)}>
@@ -167,11 +200,13 @@ function SharePicker({ onClose, onError }: { onClose: () => void; onError: (m: s
             </button>
           ))}
         </div>
-        <label className="check">
-          <input type="checkbox" checked={audio} onChange={(e) => setAudio(e.target.checked)} />
-          <span>Enviar também o som do computador</span>
-        </label>
-        {audio && <p className="muted small">O som do computador inclui a voz dos amigos no Concord, então quem assiste pode ouvir eco. Use fone e, se incomodar, desligue esta opção.</p>}
+        {!android && (
+          <label className="check">
+            <input type="checkbox" checked={audio} onChange={(e) => setAudio(e.target.checked)} />
+            <span>Enviar também o som do computador</span>
+          </label>
+        )}
+        {audio && !android && <p className="muted small">O som do computador inclui a voz dos amigos no Concord, então quem assiste pode ouvir eco. Use fone e, se incomodar, desligue esta opção.</p>}
         <div className="modal-actions">
           <button className="btn ghost" onClick={onClose}>Cancelar</button>
           <button className="btn primary" disabled={busy || (desktop && !selected)} onClick={() => void go()}>Começar a transmitir</button>
