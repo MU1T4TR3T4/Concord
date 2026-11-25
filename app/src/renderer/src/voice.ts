@@ -476,12 +476,15 @@ function applyFlags(): void {
 }
 
 const remoteSpeaking = new Set<string>();
+/** Quem está com um som da mesa tocando agora (usuário → quantos sons). */
+const soundPlaying = new Map<string, number>();
 
 /** Junta "eu falando" (portão aberto) com os outros e atualiza a tela só quando muda. */
 function pushSpeaking(): void {
   const s = getState();
   const next: Record<string, true> = {};
   for (const id of remoteSpeaking) next[id] = true;
+  if (s.myVoice) for (const id of soundPlaying.keys()) next[id] = true;
   if (localOpen && s.me && s.myVoice && !s.myVoice.muted && micTrack()) next[s.me.id] = true;
   const a = Object.keys(next);
   const b = Object.keys(s.speaking);
@@ -727,14 +730,34 @@ voiceHooks.sync = () => void enqueue(syncNow);
 voiceHooks.flags = applyFlags;
 
 // Mesa de som: cada pessoa da sala toca o arquivo no próprio aparelho (não passa pelo microfone).
-voiceHooks.playSound = (soundId: string) => {
+// Enquanto o som toca, quem o disparou aparece como "falando" (anel verde) para todos na sala.
+voiceHooks.playSound = (soundId: string, userId: string) => {
   const s = getState();
-  if (!s.myVoice || s.myVoice.deafened) return;
+  if (!s.myVoice) return;
   const el = new Audio(soundUrl(soundId)) as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+  // Com o áudio silenciado o som roda mudo, só para o anel verde durar o tempo certo.
+  el.muted = s.myVoice.deafened;
   el.volume = Math.min(1, Math.max(0, s.settings.soundVolume * s.settings.outputVolume));
   const sink = s.settings.outputDeviceId === 'default' ? '' : s.settings.outputDeviceId;
   if (el.setSinkId && sink) void el.setSinkId(sink).catch(() => undefined);
-  void el.play().catch(() => undefined);
+
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(guard);
+    const left = (soundPlaying.get(userId) ?? 1) - 1;
+    if (left > 0) soundPlaying.set(userId, left);
+    else soundPlaying.delete(userId);
+    pushSpeaking();
+  };
+  // Os sons têm no máximo 10 s; a trava cobre o caso de o arquivo nunca terminar de carregar.
+  const guard = setTimeout(finish, 12_000);
+  soundPlaying.set(userId, (soundPlaying.get(userId) ?? 0) + 1);
+  pushSpeaking();
+  el.addEventListener('ended', finish);
+  el.addEventListener('error', finish);
+  void el.play().catch(finish);
 };
 voiceHooks.settings = (changed: (keyof Settings)[]) => {
   const has = (...keys: (keyof Settings)[]) => keys.some((k) => changed.includes(k));

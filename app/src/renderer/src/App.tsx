@@ -11,6 +11,7 @@ import {
 import { Avatar, Back, FormModal, Icon, IconButton, type FormSpec } from './ui';
 import { SettingsModal } from './Settings';
 import { VoiceActions, VoiceStage } from './VoiceStage';
+import { ProfileModal, openProfile } from './Profile';
 
 export function App() {
   const s = useStore();
@@ -62,6 +63,7 @@ export function App() {
       {group && <Members s={s} group={group} />}
       {form && <FormModal spec={form} onClose={() => setForm(null)} />}
       {settings && <SettingsModal s={s} onClose={() => setSettings(false)} />}
+      {s.profileUserId && <ProfileModal key={s.profileUserId} s={s} userId={s.profileUserId} />}
       {s.pendingInvite && s.status === 'ready' && <InviteModal code={s.pendingInvite} s={s} />}
     </div>
   );
@@ -453,12 +455,13 @@ function GroupSidebar({ s, group, ask }: { s: State; group: Group; ask: Ask }) {
               <Icon name="speaker" /> <span className="grow ellipsis">{c.name}</span>
             </button>
             {(s.voice[c.id] ?? []).map((p) => (
-              <div className={`voice-user${s.speaking[p.userId] ? ' speaking' : ''}`} key={p.userId + (p.sessionId ?? '')}>
+              <button className={`voice-user${s.speaking[p.userId] ? ' speaking' : ''}`} key={p.userId + (p.sessionId ?? '')}
+                title="Ver perfil" onClick={() => openProfile(p.userId)}>
                 <Avatar name={nameOf(p.userId)} id={p.userId} size={22} />
                 <span className="grow ellipsis">{nameOf(p.userId)}</span>
                 {p.tracks.some((t) => t.startsWith('screen')) && <span className="live">AO VIVO</span>}
                 {p.deafened ? <Icon name="earOff" size={14} /> : p.muted ? <Icon name="micOff" size={14} /> : null}
-              </div>
+              </button>
             ))}
           </div>
         ))}
@@ -481,10 +484,10 @@ function Members({ s, group }: { s: State; group: Group }) {
   const on = group.members.filter(isOn);
   const off = group.members.filter((u) => !isOn(u));
   const row = (u: User, online: boolean) => (
-    <div className={`row static${online ? '' : ' dim'}`} key={u.id}>
+    <button className={`row${online ? '' : ' dim'}`} key={u.id} title="Ver perfil" onClick={() => openProfile(u.id)}>
       <Avatar name={u.displayName} id={u.id} size={28} online={online} />
       <span className="grow ellipsis">{u.displayName}{u.id === group.ownerId ? ' ★' : ''}</span>
-    </div>
+    </button>
   );
   return (
     <aside className="members">

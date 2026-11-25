@@ -153,6 +153,8 @@ export interface State {
   pendingInvite: string | null;
   /** Sons dos meus grupos e os meus sons pessoais. */
   sounds: Sound[];
+  /** Pessoa cujo cartão de perfil está aberto. */
+  profileUserId: string | null;
 }
 
 /** Aceita "ABCD2345", "?convite=ABCD2345" ou "concord://convite/ABCD2345". */
@@ -198,7 +200,7 @@ export const voiceHooks = {
   sync: (): void => undefined,
   flags: (): void => undefined,
   settings: (_changed: (keyof Settings)[]): void => undefined,
-  playSound: (_soundId: string): void => undefined,
+  playSound: (_soundId: string, _userId: string): void => undefined,
 };
 
 const VOLUMES_KEY = 'concord.volumes';
@@ -235,6 +237,7 @@ const initial: State = {
   mobileMain: false,
   pendingInvite: inviteFromUrl(),
   sounds: [],
+  profileUserId: null,
 };
 
 let state = initial;
@@ -483,7 +486,7 @@ function handleEvent(ev: string, d: any): void {
       break;
     case 'sound.played':
       // Só toca para quem está de fato naquela sala de voz.
-      if (state.myVoice?.channelId === d.channelId) voiceHooks.playSound(d.soundId);
+      if (state.myVoice?.channelId === d.channelId) voiceHooks.playSound(d.soundId, d.userId);
       break;
     case 'voice.snapshot':
       set({ voice: { ...state.voice, ...d } });

@@ -3,6 +3,7 @@ import { leaveVoice, setVoiceFlags, setVolume, setWatching, type Channel, type G
 import { canShareScreen, captureSources, screenStreamOf, startShare, stopShare, type Quality } from './voice';
 import { Avatar, Back, Icon, IconButton } from './ui';
 import { SoundBoard, SoundUpload, voiceGroup } from './Sounds';
+import { openProfile } from './Profile';
 
 const isScreen = (t: string) => t.startsWith('screen');
 
@@ -70,11 +71,13 @@ export function VoiceStage({ s, group, channel }: { s: State; group: Group; chan
         <div className="tiles">
           {parts.map((p) => (
             <div className={`tile${s.speaking[p.userId] ? ' speaking' : ''}`} key={p.userId + (p.sessionId ?? '')}>
-              <Avatar name={nameOf(p.userId)} id={p.userId} size={64} />
-              <div className="tile-name">
-                <span className="ellipsis">{nameOf(p.userId)}</span>
-                {p.deafened ? <Icon name="earOff" size={15} /> : p.muted ? <Icon name="micOff" size={15} /> : null}
-              </div>
+              <button className="tile-who" title="Ver perfil" onClick={() => openProfile(p.userId)}>
+                <Avatar name={nameOf(p.userId)} id={p.userId} size={64} />
+                <div className="tile-name">
+                  <span className="ellipsis">{nameOf(p.userId)}</span>
+                  {p.deafened ? <Icon name="earOff" size={15} /> : p.muted ? <Icon name="micOff" size={15} /> : null}
+                </div>
+              </button>
               {inRoom && p.userId !== me.id && (
                 <input type="range" min={0} max={100} title="Volume desta pessoa" className="volume"
                   value={Math.round((s.volumes[p.userId] ?? 1) * 100)}

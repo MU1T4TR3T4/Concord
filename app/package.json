@@ -1,7 +1,7 @@
 {
   "name": "concord",
   "productName": "Concord",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Voz, salas e transmissão de tela entre amigos",
   "author": "Concord",
   "private": true,

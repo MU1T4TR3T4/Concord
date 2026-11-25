@@ -92,7 +92,8 @@ small { color: var(--muted); display: block; font-size: 12px; }
 .count { background: var(--danger); color: #fff; border-radius: 9px; font-size: 11px; font-weight: 700; padding: 1px 6px; }
 .empty-hint { color: var(--muted); font-size: 12.5px; padding: 8px; }
 
-.voice-user { display: flex; align-items: center; gap: 8px; padding: 3px 8px 3px 34px; color: var(--muted); font-size: 13px; }
+.voice-user { display: flex; align-items: center; gap: 8px; width: 100%; padding: 3px 8px 3px 34px; border-radius: 7px; color: var(--muted); font-size: 13px; text-align: left; }
+.voice-user:hover { background: var(--bg-3); color: var(--text); }
 .live { background: var(--danger); color: #fff; font-size: 9px; font-weight: 800; padding: 1px 5px; border-radius: 4px; letter-spacing: .5px; }
 
 .menu {
@@ -197,6 +198,15 @@ label > span { font-size: 12px; font-weight: 650; color: var(--muted); }
   display: flex; flex-direction: column; align-items: center; gap: 10px; transition: border-color .12s;
 }
 .tile.speaking { border-color: var(--ok); }
+.tile-who { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 100%; border-radius: 10px; padding: 4px 8px; }
+.tile-who:hover { background: var(--bg-3); }
+
+/* ---------- cartão de perfil ---------- */
+.modal.profile { width: min(340px, 92vw); align-items: center; text-align: center; gap: 10px; }
+.modal.profile h2 { font-size: 22px; margin-top: 4px; }
+.profile-status { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13.5px; }
+.dot-inline { width: 10px; height: 10px; border-radius: 50%; background: #655d7c; }
+.dot-inline.on { background: var(--ok); }
 .tile-name { display: flex; align-items: center; gap: 6px; max-width: 100%; font-weight: 600; color: var(--text); }
 .volume { width: 100%; padding: 0; border: 0; background: none; accent-color: var(--accent); }
 .controls { display: flex; justify-content: center; gap: 10px; padding: 14px; border-top: 1px solid var(--line); flex-shrink: 0; }
