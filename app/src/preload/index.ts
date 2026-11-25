@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('concord', {
       ipcRenderer.on('ptt:state', (_e, down: boolean) => cb(down));
     },
   },
+  invite: {
+    pending: () => ipcRenderer.invoke('invite:pending'),
+    onInvite: (cb: (url: string) => void) => {
+      ipcRenderer.on('invite:open', (_e, url: string) => cb(url));
+    },
+  },
   update: {
     version: () => ipcRenderer.invoke('update:version'),
     check: () => ipcRenderer.invoke('update:check'),

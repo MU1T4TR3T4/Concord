@@ -1,6 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import {
   patch,
+  clearInvite,
+  inviteInfo,
+  inviteLink,
+  parseInvite,
   activeTextChannel, clearUnread, dmChannelId, joinVoice, leaveVoice, loadHistory, login, logout, openGroup,
   register, request, setView, setVoiceFlags, useStore, type Friend, type Group, type State, type User,
 } from './store';
@@ -19,6 +23,18 @@ export function App() {
     if (!api) return;
     void api.version().then((appVersion) => patch({ appVersion }));
     api.onStatus((update) => patch({ update }));
+  }, []);
+
+  // Link de convite aberto pelo sistema (concord://convite/CODIGO) no app de computador.
+  useEffect(() => {
+    const api = window.concord?.invite;
+    if (!api) return;
+    const take = (url: string | null) => {
+      const code = parseInvite(url);
+      if (code) patch({ pendingInvite: code });
+    };
+    void api.pending().then(take);
+    api.onInvite(take);
   }, []);
 
   if (s.status === 'signed-out') return <AuthScreen />;
@@ -41,6 +57,7 @@ export function App() {
       {group && <Members s={s} group={group} />}
       {form && <FormModal spec={form} onClose={() => setForm(null)} />}
       {settings && <SettingsModal s={s} onClose={() => setSettings(false)} />}
+      {s.pendingInvite && s.status === 'ready' && <InviteModal code={s.pendingInvite} s={s} />}
     </div>
   );
 }
@@ -77,6 +94,7 @@ function AuthScreen() {
         <img className="logo-img" src="./icon-192.png" alt="" />
         <div className="logo center">Concord</div>
         <p className="muted">{mode === 'login' ? 'Entre para falar com seus amigos.' : 'Crie sua conta em segundos.'}</p>
+        <InviteBanner />
         <label>
           <span>Usuário</span>
           <input autoFocus value={username} onChange={(e) => setUsername(e.target.value)} maxLength={20} autoComplete="username" />
@@ -104,6 +122,84 @@ function AuthScreen() {
           {mode === 'login' ? 'Ainda não tenho conta' : 'Já tenho conta'}
         </button>
       </form>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ convite por link
+
+/** Na tela de entrada: avisa que há um convite esperando o login. */
+function InviteBanner() {
+  const s = useStore();
+  const [name, setName] = useState('');
+  useEffect(() => {
+    if (s.pendingInvite) void inviteInfo(s.pendingInvite).then((i) => setName(i.name)).catch(() => setName(''));
+  }, [s.pendingInvite]);
+  if (!s.pendingInvite) return null;
+  return (
+    <div className="success">
+      {name ? <>Você foi convidado para o grupo <b>{name}</b>. </> : 'Você recebeu um convite. '}
+      Entre ou crie sua conta para aceitar.
+    </div>
+  );
+}
+
+function InviteModal({ code, s }: { code: string; s: State }) {
+  const [info, setInfo] = useState<{ name: string; members: number } | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const close = clearInvite;
+  const already = s.groups.find((g) => g.inviteCode === code);
+
+  useEffect(() => {
+    setInfo(null);
+    setError('');
+    void inviteInfo(code).then(setInfo).catch((e) => setError((e as Error).message));
+  }, [code]);
+
+  async function accept() {
+    setBusy(true);
+    try {
+      const r = await request<{ groupId: string }>('group.join', { code });
+      close();
+      // O grupo chega por evento; abre assim que estiver na lista.
+      setTimeout(() => openGroup(r.groupId), 150);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+
+  // No navegador do computador, oferece continuar no aplicativo instalado.
+  const offerApp = !window.concord && !/Android|iPhone|iPad/i.test(navigator.userAgent);
+
+  return (
+    <div className="overlay">
+      <div className="modal invite">
+        <img className="logo-img" src="./icon-192.png" alt="" />
+        {error ? (
+          <>
+            <h2>Convite inválido</h2>
+            <p className="muted">{error}</p>
+            <div className="modal-actions"><button className="btn primary" onClick={close}>Fechar</button></div>
+          </>
+        ) : !info ? (
+          <p className="muted center">Carregando convite…</p>
+        ) : (
+          <>
+            <p className="muted center">Você foi convidado para o grupo</p>
+            <h2 className="center">{info.name}</h2>
+            <p className="muted center">{info.members} {info.members === 1 ? 'membro' : 'membros'}</p>
+            {already ? (
+              <button className="btn primary wide" onClick={() => { close(); openGroup(already.id); }}>Você já faz parte — abrir grupo</button>
+            ) : (
+              <button className="btn primary wide" disabled={busy} onClick={() => void accept()}>Aceitar convite</button>
+            )}
+            {offerApp && <a className="link center" href={`concord://convite/${code}`}>Abrir no aplicativo do computador</a>}
+            <button className="btn ghost" onClick={close}>Agora não</button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -267,7 +363,12 @@ function FriendsView({ s, ask }: { s: State; ask: Ask }) {
 
 function GroupSidebar({ s, group, ask }: { s: State; group: Group; ask: Ask }) {
   const [menu, setMenu] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'' | 'link' | 'code'>('');
+  const copy = (what: 'link' | 'code') => {
+    void navigator.clipboard.writeText(what === 'link' ? inviteLink(group.inviteCode) : group.inviteCode);
+    setCopied(what);
+    setTimeout(() => setCopied(''), 1500);
+  };
   const owner = group.ownerId === s.me!.id;
   const view = s.view as { channelId?: string };
   const nameOf = (id: string) => group.members.find((m) => m.id === id)?.displayName ?? 'Alguém';
@@ -296,8 +397,11 @@ function GroupSidebar({ s, group, ask }: { s: State; group: Group; ask: Ask }) {
         <IconButton icon="more" title="Opções do grupo" active={menu} onClick={() => setMenu(!menu)} />
         {menu && (
           <div className="menu" onMouseLeave={() => setMenu(false)}>
-            <button onClick={() => { void navigator.clipboard.writeText(group.inviteCode); setCopied(true); setTimeout(() => setCopied(false), 1500); }}>
-              <Icon name="copy" /> {copied ? 'Copiado!' : `Convite: ${group.inviteCode}`}
+            <button onClick={() => copy('link')}>
+              <Icon name="link" /> {copied === 'link' ? 'Link copiado!' : 'Copiar link de convite'}
+            </button>
+            <button onClick={() => copy('code')}>
+              <Icon name="copy" /> {copied === 'code' ? 'Código copiado!' : `Código: ${group.inviteCode}`}
             </button>
             {owner && (
               <button onClick={() => { setMenu(false); ask({

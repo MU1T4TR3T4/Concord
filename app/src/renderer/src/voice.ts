@@ -29,6 +29,10 @@ declare global {
         capture(): Promise<{ type: 'key' | 'mouse'; code: number } | null>;
         onState(cb: (down: boolean) => void): void;
       };
+      invite: {
+        pending(): Promise<string | null>;
+        onInvite(cb: (url: string) => void): void;
+      };
       update: {
         version(): Promise<string>;
         check(): Promise<void>;

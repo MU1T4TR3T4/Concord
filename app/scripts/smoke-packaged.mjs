@@ -9,7 +9,8 @@ import { join } from 'node:path';
 const exe = join(import.meta.dirname, '../release/win-unpacked/Concord.exe');
 // Perfil temporário: não mexe na conta logada do app instalado.
 const profile = mkdtempSync(join(tmpdir(), 'concord-smoke-'));
-const child = spawn(exe, ['--remote-debugging-port=9333', `--user-data-dir=${profile}`], { stdio: 'ignore' });
+// O último argumento simula o Windows abrindo o app por um link de convite.
+const child = spawn(exe, ['--remote-debugging-port=9333', `--user-data-dir=${profile}`, 'concord://convite/TESTE2345/'], { stdio: 'ignore' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let result = { error: 'não conectou' };
@@ -30,6 +31,7 @@ try {
   result = await evaluate(`(async () => {
     const out = { url: location.protocol, tela: document.querySelector('.auth-card') ? 'login' : document.querySelector('.shell') ? 'app' : 'vazia' };
     out.versao = await window.concord.update.version();
+    out.conviteNaTelaDeLogin = Boolean(document.querySelector('.auth-card .success'));
     out.fontesDeCaptura = (await window.concord.capture.sources()).length;
     out.pttConfigura = await window.concord.ptt.configure({ type: 'key', code: 58 });
     await window.concord.ptt.configure(null);

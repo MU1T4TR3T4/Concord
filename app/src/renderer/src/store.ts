@@ -132,6 +132,44 @@ export interface State {
   appVersion: string;
   /** Em telas estreitas: true mostra o conteúdo, false mostra a navegação. */
   mobileMain: boolean;
+  /** Código de um link de convite aberto, esperando a pessoa aceitar ou recusar. */
+  pendingInvite: string | null;
+}
+
+/** Aceita "ABCD2345", "?convite=ABCD2345" ou "concord://convite/ABCD2345". */
+export function parseInvite(text: string | null | undefined): string | null {
+  const m = /(?:convite[=/])?([A-Za-z0-9]{6,16})\/?$/.exec((text ?? '').trim());
+  return m ? m[1].toUpperCase() : null;
+}
+
+export function inviteLink(code: string): string {
+  return `${SERVER_URL}/?convite=${code}`;
+}
+
+export async function inviteInfo(code: string): Promise<{ name: string; members: number }> {
+  const res = await fetch(`${SERVER_URL}/api/invite/${encodeURIComponent(code)}`).catch(() => null);
+  if (!res) throw new Error('Não foi possível falar com o servidor');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? 'Convite inválido');
+  return data;
+}
+
+const INVITE_KEY = 'concord.invite';
+
+function inviteFromUrl(): string | null {
+  const raw = new URLSearchParams(location.search).get('convite');
+  if (raw) {
+    // Tira o código da barra de endereço e guarda até a pessoa responder,
+    // mesmo que ela recarregue a página antes de entrar na conta.
+    history.replaceState(null, '', location.pathname);
+    sessionStorage.setItem(INVITE_KEY, raw);
+  }
+  return parseInvite(sessionStorage.getItem(INVITE_KEY));
+}
+
+export function clearInvite(): void {
+  sessionStorage.removeItem(INVITE_KEY);
+  set({ pendingInvite: null });
 }
 
 /** Ligações com o motor de voz (voice.ts), preenchidas quando ele carrega. */
@@ -175,6 +213,7 @@ const initial: State = {
   update: { state: 'idle' },
   appVersion: '',
   mobileMain: false,
+  pendingInvite: inviteFromUrl(),
 };
 
 let state = initial;
@@ -443,7 +482,7 @@ function signOutLocal(): void {
   const old = ws;
   ws = null;
   old?.close();
-  state = { ...initial, status: 'signed-out', settings: state.settings, volumes: state.volumes, update: state.update, appVersion: state.appVersion };
+  state = { ...initial, status: 'signed-out', settings: state.settings, volumes: state.volumes, update: state.update, appVersion: state.appVersion, pendingInvite: state.pendingInvite };
   for (const l of listeners) l();
 }
 

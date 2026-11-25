@@ -156,6 +156,22 @@ function setupUpdater(): void {
   setInterval(check, 2 * 60 * 60 * 1000);
 }
 
+// ------------------------------------------------------------------ links de convite (concord://convite/CODIGO)
+
+let pendingInvite: string | null = null;
+const inviteIn = (argv: string[]) => argv.find((a) => a.toLowerCase().startsWith('concord://')) ?? null;
+
+function setupInvites(): void {
+  // Registra o Concord como o programa que abre links concord:// neste usuário do Windows.
+  if (app.isPackaged) app.setAsDefaultProtocolClient('concord');
+  pendingInvite = inviteIn(process.argv);
+  ipcMain.handle('invite:pending', () => {
+    const url = pendingInvite;
+    pendingInvite = null;
+    return url;
+  });
+}
+
 // ------------------------------------------------------------------ janela
 
 function createWindow(): void {
@@ -194,7 +210,10 @@ function createWindow(): void {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
+    // Clicar em um link de convite com o app já aberto cai aqui.
+    const url = inviteIn(argv);
+    if (url) send('invite:open', url);
     if (!win) return;
     if (win.isMinimized()) win.restore();
     win.focus();
@@ -203,6 +222,7 @@ if (!app.requestSingleInstanceLock()) {
     setupCapture();
     setupPtt();
     setupUpdater();
+    setupInvites();
     createWindow();
   });
   app.on('will-quit', () => {

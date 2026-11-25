@@ -87,6 +87,16 @@ export class Hub extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
 
+    // Prévia pública de um convite: quem recebe o link vê o nome do grupo antes de entrar.
+    if (req.method === 'GET' && url.pathname.startsWith('/api/invite/')) {
+      const code = decodeURIComponent(url.pathname.slice('/api/invite/'.length)).trim().toUpperCase();
+      const g = this.one(
+        'SELECT name, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS members FROM groups g WHERE invite_code = ?',
+        code,
+      );
+      return g ? json({ name: g.name, members: g.members }) : json({ error: 'Convite inválido ou expirado' }, 404);
+    }
+
     if (req.method !== 'POST') return json({ error: 'Método não permitido' }, 405);
     try {
       const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
